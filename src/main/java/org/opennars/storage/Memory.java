@@ -392,7 +392,7 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             // VectorNARS: ground "context" in the current task term.
             // Important: do NOT call conceptualize() here, because it activates/creates concepts
             // and perturbs bag ordering (breaking determinism in multi-step regression tests).
-            if (Boolean.getBoolean("opennars.vectorContext") && cont.getCurrentConcept() != null) {
+            if (Boolean.getBoolean("opennars.vectorContext") && cont.getCurrentConcept() != null && !task.sentence.isGoal()) {
                 Term focusTerm = cont.getCurrentTerm();
                 if (focusTerm instanceof Statement) {
                     focusTerm = ((Statement) focusTerm).getSubject();

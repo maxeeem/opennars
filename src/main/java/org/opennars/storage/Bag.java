@@ -228,7 +228,9 @@ public class Bag<Type extends Item<K>,K> implements Serializable, Iterable<Type>
                 }
             }
 
-            final double score = priority * (0.3 + 0.7 * similarity);
+            // Base weight 0.8 keeps selection driven by urgency.
+            // Vector weight 0.2 provides a gentle relevance bonus.
+            final double score = priority * (0.8 + 0.2 * similarity);
             if (score > bestScore) {
                 bestScore = score;
                 bestCandidate = candidate;

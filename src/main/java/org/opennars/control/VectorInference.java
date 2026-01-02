@@ -66,6 +66,18 @@ public final class VectorInference {
             return;
         }
 
+        // No-nonsense bridge guard:
+        // When a concept is actively involved in Goal/Quest processing (desires/quests pending),
+        // do not inject fuzzy similarity associations that can dilute procedural confidence.
+        try {
+            if (current != null
+                    && ((current.desires != null && !current.desires.isEmpty())
+                    || (current.quests != null && !current.quests.isEmpty()))) {
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+
         if (contextVec == null
                 || contextTerm == null
                 || contextConcept == null
@@ -96,7 +108,7 @@ public final class VectorInference {
 
             final BudgetValue budget = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
             final TruthValue truth = new TruthValue(1.0f, sim * 0.9, nar.narParameters);
-            final Stamp stamp = new Stamp(nar, mem, Tense.Eternal);
+            final Stamp stamp = new Stamp(nar, mem, Tense.Present);
 
             final Sentence<Term> bridge = new Sentence<>(similarityTerm, Symbols.JUDGMENT_MARK, truth, stamp);
             final Task<Term> bridgeTask = new Task<>(bridge, budget, Task.EnumType.INPUT);

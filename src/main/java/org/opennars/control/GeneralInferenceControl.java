@@ -51,6 +51,7 @@ public class GeneralInferenceControl {
         final Hypervector contextVec;
         final Term contextTerm;
         final Concept contextConcept;
+        final boolean globalGoalOrQuestMode;
         synchronized (mem.concepts) { //modify concept bag
             if (VectorInference.isEnabled()) {
                 contextVec = mem.lastContextVector;
@@ -78,14 +79,37 @@ public class GeneralInferenceControl {
             if (currentConcept==null) {
                 return;
             }
+
+            boolean goalMode = false;
+            // If ANY goal/quest is currently pending anywhere, suppress bridge injection
+            // to keep procedural goal confidence from being diluted.
+            for (final Concept c : mem.concepts) {
+                if (c == null) {
+                    continue;
+                }
+                if ((c.desires != null && !c.desires.isEmpty()) || (c.quests != null && !c.quests.isEmpty())) {
+                    goalMode = true;
+                    break;
+                }
+            }
+            // currentConcept is taken out of the bag above; include it in the check too.
+            if (!goalMode
+                    && ((currentConcept.desires != null && !currentConcept.desires.isEmpty())
+                    || (currentConcept.quests != null && !currentConcept.quests.isEmpty()))) {
+                goalMode = true;
+            }
+            globalGoalOrQuestMode = goalMode;
         }
 
         final DerivationContext nal = new DerivationContext(mem, narParameters, nar);
         boolean putBackConcept = false;
         float forgetCycles = 0.0f;
         synchronized(currentConcept) { //use current concept (current concept is the resource)  
-            // Phase 21: bridge injection must be thread-safe and integrity-checked.
-            VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
+            // VectorNARS: inject bridge associations at most once per concept-cycle.
+            // Suppress them entirely when any goal/quest is pending (goal-focused mode).
+            if (!globalGoalOrQuestMode) {
+                VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
+            }
             ProcessAnticipation.maintainDisappointedAnticipations(narParameters, currentConcept, nar);
             if(currentConcept.taskLinks.size() == 0) { //remove concepts without tasklinks and without termlinks
                 mem.concepts.pickOut(currentConcept.getTerm());
@@ -101,7 +125,7 @@ public class GeneralInferenceControl {
             VectorInference.updateContext(mem, currentConcept);
 
             nal.setCurrentConcept(currentConcept);
-            putBackConcept = fireConcept(nal, 1);
+            putBackConcept = fireConcept(nal, 1, contextVec, contextTerm, contextConcept, nar, globalGoalOrQuestMode);
             if(putBackConcept) {
                 forgetCycles = nal.memory.cycles(nal.memory.narParameters.CONCEPT_FORGET_DURATIONS);
                 if(nal.memory.emotion != null) {
@@ -117,7 +141,14 @@ public class GeneralInferenceControl {
     }
 
     // /return true if concept must be put back
-    public static boolean fireConcept(final DerivationContext nal, final int numTaskLinks) {
+    public static boolean fireConcept(
+            final DerivationContext nal,
+            final int numTaskLinks,
+            final Hypervector contextVec,
+            final Term contextTerm,
+            final Concept contextConcept,
+            final Nar nar,
+            final boolean globalGoalOrQuestMode) {
         for (int i = 0; i < numTaskLinks; i++) {
             if (nal.currentConcept.taskLinks.size() == 0) {
                 return false;
@@ -127,20 +158,28 @@ public class GeneralInferenceControl {
                 return false;
             }
             if (nal.currentTaskLink.budget.aboveThreshold()) {
-                fireTaskLink(nal, nal.memory.narParameters.TERMLINK_MAX_REASONED);                    
+                fireTaskLink(nal, nal.memory.narParameters.TERMLINK_MAX_REASONED, contextVec, contextTerm, contextConcept, nar, globalGoalOrQuestMode);
             }
             nal.currentConcept.taskLinks.putBack(nal.currentTaskLink, nal.memory.cycles(nal.memory.narParameters.TASKLINK_FORGET_DURATIONS), nal.memory);
         }
         return true;
     }
     
-    protected static void fireTaskLink(final DerivationContext nal, int termLinks) {
+    protected static void fireTaskLink(
+            final DerivationContext nal,
+            int termLinks,
+            final Hypervector contextVec,
+            final Term contextTerm,
+            final Concept contextConcept,
+            final Nar nar,
+            final boolean globalGoalOrQuestMode) {
         @SuppressWarnings("rawtypes")
         final Task task = nal.currentTaskLink.getTarget();
         nal.setCurrentTerm(nal.currentConcept.term);
         nal.setCurrentTaskLink(nal.currentTaskLink);
         nal.setCurrentBeliefLink(null);
         nal.setCurrentTask(task); // one of the two places where this variable is set
+
         if(nal.memory.emotion != null) {
             nal.memory.emotion.adjustBusy(nal.currentTaskLink.getPriority(),nal.currentTaskLink.getDurability(),nal);
         }
