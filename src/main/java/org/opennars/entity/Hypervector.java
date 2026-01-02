@@ -15,9 +15,23 @@ public class Hypervector implements Serializable {
     public Hypervector() {
         this.bits = new long[LONGS];
     }
-    
-    private Hypervector(long[] bits) {
-        this.bits = bits;
+
+    Hypervector(long[] bits, boolean trustedNoCopy) {
+        if (bits == null || bits.length != LONGS) {
+            throw new IllegalArgumentException("Expected " + LONGS + " longs (1024 bits)");
+        }
+        this.bits = trustedNoCopy ? bits : bits.clone();
+    }
+
+    /**
+     * Construct a hypervector from raw bit-packing.
+     * The input array is defensively copied.
+     */
+    public Hypervector(final long[] bits) {
+        if (bits == null || bits.length != LONGS) {
+            throw new IllegalArgumentException("Expected " + LONGS + " longs (1024 bits)");
+        }
+        this.bits = bits.clone();
     }
 
     /** * Initialize random vector (Orthogonal Mode). 
@@ -29,7 +43,7 @@ public class Hypervector implements Serializable {
         for (int i = 0; i < LONGS; i++) {
             newBits[i] = rand.nextLong();
         }
-        return new Hypervector(newBits);
+        return new Hypervector(newBits, true);
     }
 
     /**
