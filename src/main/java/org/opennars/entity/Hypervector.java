@@ -100,4 +100,8 @@ public class Hypervector implements Serializable {
         }
         return h;
     }
+
+    public long[] getBits() {
+        return this.bits;
+    }
 }
