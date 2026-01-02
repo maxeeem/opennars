@@ -57,6 +57,8 @@ public class GeneralInferenceControl {
     
     public static void selectConceptForInference(final Memory mem, final Parameters narParameters, final Nar nar) {
         final boolean vectorContextEnabled = Boolean.getBoolean("opennars.vectorContext");
+        final boolean vectorSelectionEnabled = Boolean.getBoolean("opennars.vectorConceptSelection");
+        final boolean vectorBridgeInjectionEnabled = Boolean.getBoolean("opennars.vectorBridgeInjection");
         final Concept currentConcept;
         final Hypervector contextVec;
         final Term contextTerm;
@@ -65,15 +67,19 @@ public class GeneralInferenceControl {
             if (vectorContextEnabled) {
                 contextVec = mem.lastContextVector;
                 contextTerm = mem.lastContextTerm;
-                Concept selected = mem.concepts.takeWithContext(contextVec);
-                // If we keep re-selecting the context term itself, try once to pull a different
-                // related concept, so analogy/synonym bridging can happen.
-                if (selected != null && contextTerm != null && contextTerm.equals(selected.getTerm())) {
-                    final Concept alternate = mem.concepts.takeWithContext(contextVec);
-                    mem.concepts.putIn(selected);
-                    selected = (alternate != null) ? alternate : selected;
+                if (vectorSelectionEnabled) {
+                    Concept selected = mem.concepts.takeWithContext(contextVec);
+                    // If we keep re-selecting the context term itself, try once to pull a different
+                    // related concept, so analogy/synonym bridging can happen.
+                    if (selected != null && contextTerm != null && contextTerm.equals(selected.getTerm())) {
+                        final Concept alternate = mem.concepts.takeWithContext(contextVec);
+                        mem.concepts.putIn(selected);
+                        selected = (alternate != null) ? alternate : selected;
+                    }
+                    currentConcept = selected;
+                } else {
+                    currentConcept = mem.concepts.takeOut();
                 }
-                currentConcept = selected;
                 contextConcept = (contextTerm != null) ? mem.concept(contextTerm) : null;
             } else {
                 contextVec = null;
@@ -87,6 +93,7 @@ public class GeneralInferenceControl {
         }
 
         if (vectorContextEnabled
+            && vectorBridgeInjectionEnabled
                 && contextVec != null
                 && contextTerm != null
                 && contextConcept != null

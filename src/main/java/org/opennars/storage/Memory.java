@@ -378,18 +378,22 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             cont.setCurrentTerm(task.getTerm());
             cont.setCurrentConcept(conceptualize(task.budget, cont.getCurrentTerm()));
 
-            // VectorNARS: ground "context" in the current task term so the next
-            // concept-bag selection can retrieve semantically similar concepts.
+            // VectorNARS: ground "context" in the current task term.
+            // Important: do NOT call conceptualize() here, because it activates/creates concepts
+            // and perturbs bag ordering (breaking determinism in multi-step regression tests).
             if (Boolean.getBoolean("opennars.vectorContext") && cont.getCurrentConcept() != null) {
                 Term focusTerm = cont.getCurrentTerm();
                 if (focusTerm instanceof Statement) {
                     focusTerm = ((Statement) focusTerm).getSubject();
                 }
-
-                final Concept focusConcept = (focusTerm != null) ? conceptualize(task.budget, focusTerm) : null;
-                if (focusConcept != null && focusConcept.vector != null) {
-                    this.lastContextVector = focusConcept.vector;
-                    this.lastContextTerm = focusConcept.getTerm();
+                if (focusTerm != null && !(focusTerm instanceof Interval)) {
+                    focusTerm = CompoundTerm.replaceIntervals(focusTerm);
+                    final Concept focusConcept = concept(focusTerm); // existing only; no side effects
+                    final Hypervector focusVector = (focusConcept != null && focusConcept.vector != null)
+                            ? focusConcept.vector
+                            : Hypervector.random(focusTerm.hashCode());
+                    this.lastContextVector = focusVector;
+                    this.lastContextTerm = focusTerm;
                 }
             }
 
