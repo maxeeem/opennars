@@ -88,6 +88,9 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
     
     //todo make sense of this class and de-obfuscate
     public final Bag<Concept,Term> concepts;
+
+    // VectorNARS: last concept focus context (null means no focus)
+    public transient Hypervector lastContextVector = null;
     public transient EventEmitter event;
     
     /* InnateOperator registry. Containing all registered operators of the system */

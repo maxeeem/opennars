@@ -35,6 +35,8 @@ import org.opennars.main.Parameters;
 import org.opennars.storage.Bag;
 import org.opennars.storage.Memory;
 
+import org.opennars.entity.Hypervector;
+
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -60,6 +62,9 @@ public class Concept extends Item<Term> implements Serializable {
      * The term is the unique ID of the concept
      */
     public final Term term;
+
+    // NEW: The Semantic Vector (VectorNARS)
+    public Hypervector vector;
     
     //recent events that happened before the operation the
     //concept represents was executed
@@ -134,6 +139,9 @@ public class Concept extends Item<Term> implements Serializable {
         
         this.term = tm;
         this.memory = memory;
+
+        // NEW: Initialize with Orthogonal Random Vector (Deterministic based on term)
+        this.vector = Hypervector.random(tm.hashCode());
 
         this.questions = new ArrayList<>();
         this.beliefs = new ArrayList<>();

@@ -24,6 +24,8 @@
 package org.opennars.storage;
 
 import org.opennars.entity.Item;
+import org.opennars.entity.Concept;
+import org.opennars.entity.Hypervector;
 import java.io.Serializable;
 import java.util.*;
 import org.opennars.inference.BudgetFunctions;
@@ -181,6 +183,66 @@ public class Bag<Type extends Item<K>,K> implements Serializable, Iterable<Type>
         currentCounter--;
         nameTable.remove(selected.name());
         return selected;
+    }
+
+    /**
+     * VECTOR-NARS SELECTION:
+     * Balances Priority (Urgency) with Similarity (Relevance).
+     *
+     * @param contextVector The vector of the concept currently in focus (can be null).
+     * @return The best candidate item.
+     */
+    public Type takeWithContext(final Hypervector contextVector) {
+        // 1. If no context, fallback to standard probabilistic behavior
+        if (contextVector == null) {
+            return takeOut();
+        }
+
+        // 2. AIKR Sampling: sample a small candidate set
+        final int sampleSize = 10;
+        final List<Type> candidates = new ArrayList<>(sampleSize);
+
+        for (int i = 0; i < sampleSize; i++) {
+            final Type t = takeOut();
+            if (t == null) {
+                break;
+            }
+            candidates.add(t);
+        }
+
+        if (candidates.isEmpty()) {
+            return null;
+        }
+
+        // 3. Score candidates
+        Type bestCandidate = null;
+        double bestScore = -1.0;
+        for (final Type candidate : candidates) {
+            final double priority = candidate.getPriority();
+            double similarity = 0.5; // neutral
+
+            if (candidate instanceof Concept) {
+                final Concept c = (Concept) candidate;
+                if (c.vector != null) {
+                    similarity = c.vector.similarity(contextVector);
+                }
+            }
+
+            final double score = priority * (0.3 + 0.7 * similarity);
+            if (score > bestScore) {
+                bestScore = score;
+                bestCandidate = candidate;
+            }
+        }
+
+        // 4. Return winner, put losers back (without applying forgetting)
+        for (final Type t : candidates) {
+            if (t != bestCandidate) {
+                putIn(t);
+            }
+        }
+
+        return bestCandidate;
     }
 
     /**

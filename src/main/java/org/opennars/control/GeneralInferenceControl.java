@@ -26,6 +26,7 @@ package org.opennars.control;
 import org.opennars.control.concept.ProcessAnticipation;
 import org.opennars.control.concept.ProcessGoal;
 import org.opennars.entity.Concept;
+import org.opennars.entity.Hypervector;
 import org.opennars.entity.Task;
 import org.opennars.entity.TermLink;
 import org.opennars.inference.BudgetFunctions;
@@ -47,9 +48,15 @@ import org.opennars.storage.Memory;
 public class GeneralInferenceControl {
     
     public static void selectConceptForInference(final Memory mem, final Parameters narParameters, final Nar nar) {
+        final boolean vectorContextEnabled = Boolean.getBoolean("opennars.vectorContext");
         final Concept currentConcept;
         synchronized (mem.concepts) { //modify concept bag
-            currentConcept = mem.concepts.takeOut();
+            if (vectorContextEnabled) {
+                final Hypervector contextVec = mem.lastContextVector;
+                currentConcept = mem.concepts.takeWithContext(contextVec);
+            } else {
+                currentConcept = mem.concepts.takeOut();
+            }
             if (currentConcept==null) {
                 return;
             }
@@ -70,6 +77,15 @@ public class GeneralInferenceControl {
                 mem.conceptRemoved(currentConcept);
                 return;
             }
+
+            if (vectorContextEnabled) {
+                // VectorNARS: small Hebbian update toward the previous focus, then update focus
+                if (mem.lastContextVector != null && currentConcept.vector != null) {
+                    currentConcept.vector.nudge(mem.lastContextVector, 0.05);
+                }
+                mem.lastContextVector = currentConcept.vector;
+            }
+
             nal.setCurrentConcept(currentConcept);
             putBackConcept = fireConcept(nal, 1);
             if(putBackConcept) {
