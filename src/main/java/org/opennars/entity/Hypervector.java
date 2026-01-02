@@ -53,7 +53,7 @@ public class Hypervector implements Serializable {
      */
     public void nudge(Hypervector target, double rate) {
         if (target == null) return;
-        Random rand = new Random();
+        Random rand = new Random(deterministicSeed(this.bits, target.bits));
         for (int i = 0; i < LONGS; i++) {
             long diffMask = this.bits[i] ^ target.bits[i]; // 1 where bits differ
             if (diffMask == 0) continue;
@@ -71,5 +71,19 @@ public class Hypervector implements Serializable {
                 }
             }
         }
+    }
+
+    private static long deterministicSeed(long[] a, long[] b) {
+        // FNV-1a 64-bit hash over both vectors (stable across runs)
+        long h = 0xcbf29ce484222325L;
+        for (int i = 0; i < a.length; i++) {
+            h ^= a[i];
+            h *= 0x100000001b3L;
+        }
+        for (int i = 0; i < b.length; i++) {
+            h ^= b[i];
+            h *= 0x100000001b3L;
+        }
+        return h;
     }
 }

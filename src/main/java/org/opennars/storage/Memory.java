@@ -42,6 +42,7 @@ import org.opennars.io.events.OutputHandler.OUT;
 import org.opennars.io.events.OutputHandler.DEBUG;
 import org.opennars.language.CompoundTerm;
 import org.opennars.language.Interval;
+import org.opennars.language.Statement;
 import org.opennars.language.Tense;
 import org.opennars.language.Term;
 import org.opennars.main.Nar;
@@ -91,6 +92,7 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
 
     // VectorNARS: last concept focus context (null means no focus)
     public transient Hypervector lastContextVector = null;
+    public transient Term lastContextTerm = null;
     public transient EventEmitter event;
     
     /* InnateOperator registry. Containing all registered operators of the system */
@@ -375,6 +377,22 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             cont.setCurrentTask(task);
             cont.setCurrentTerm(task.getTerm());
             cont.setCurrentConcept(conceptualize(task.budget, cont.getCurrentTerm()));
+
+            // VectorNARS: ground "context" in the current task term so the next
+            // concept-bag selection can retrieve semantically similar concepts.
+            if (Boolean.getBoolean("opennars.vectorContext") && cont.getCurrentConcept() != null) {
+                Term focusTerm = cont.getCurrentTerm();
+                if (focusTerm instanceof Statement) {
+                    focusTerm = ((Statement) focusTerm).getSubject();
+                }
+
+                final Concept focusConcept = (focusTerm != null) ? conceptualize(task.budget, focusTerm) : null;
+                if (focusConcept != null && focusConcept.vector != null) {
+                    this.lastContextVector = focusConcept.vector;
+                    this.lastContextTerm = focusConcept.getTerm();
+                }
+            }
+
             if (cont.getCurrentConcept() != null) {
                 final boolean processed = ProcessTask.processTask(cont.getCurrentConcept(), cont, task, time);
                 if (processed) {

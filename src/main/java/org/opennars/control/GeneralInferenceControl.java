@@ -24,15 +24,21 @@
 package org.opennars.control;
 
 import org.opennars.control.concept.ProcessAnticipation;
-import org.opennars.control.concept.ProcessGoal;
+import org.opennars.entity.BudgetValue;
 import org.opennars.entity.Concept;
 import org.opennars.entity.Hypervector;
+import org.opennars.entity.Sentence;
 import org.opennars.entity.Task;
 import org.opennars.entity.TermLink;
+import org.opennars.entity.TruthValue;
+import org.opennars.entity.Stamp;
 import org.opennars.inference.BudgetFunctions;
 import org.opennars.inference.RuleTables;
-import org.opennars.interfaces.Timable;
+import org.opennars.io.Symbols;
 import org.opennars.io.events.Events;
+import org.opennars.language.Similarity;
+import org.opennars.language.Tense;
+import org.opennars.language.Term;
 import org.opennars.main.Nar;
 import org.opennars.main.Parameters;
 import org.opennars.storage.Memory;
@@ -46,19 +52,64 @@ import org.opennars.storage.Memory;
  *
  */
 public class GeneralInferenceControl {
+
+    private static final double VECTOR_BRIDGE_SIMILARITY_THRESHOLD = 0.8;
     
     public static void selectConceptForInference(final Memory mem, final Parameters narParameters, final Nar nar) {
         final boolean vectorContextEnabled = Boolean.getBoolean("opennars.vectorContext");
         final Concept currentConcept;
+        final Hypervector contextVec;
+        final Term contextTerm;
+        final Concept contextConcept;
         synchronized (mem.concepts) { //modify concept bag
             if (vectorContextEnabled) {
-                final Hypervector contextVec = mem.lastContextVector;
-                currentConcept = mem.concepts.takeWithContext(contextVec);
+                contextVec = mem.lastContextVector;
+                contextTerm = mem.lastContextTerm;
+                Concept selected = mem.concepts.takeWithContext(contextVec);
+                // If we keep re-selecting the context term itself, try once to pull a different
+                // related concept, so analogy/synonym bridging can happen.
+                if (selected != null && contextTerm != null && contextTerm.equals(selected.getTerm())) {
+                    final Concept alternate = mem.concepts.takeWithContext(contextVec);
+                    mem.concepts.putIn(selected);
+                    selected = (alternate != null) ? alternate : selected;
+                }
+                currentConcept = selected;
+                contextConcept = (contextTerm != null) ? mem.concept(contextTerm) : null;
             } else {
+                contextVec = null;
+                contextTerm = null;
+                contextConcept = null;
                 currentConcept = mem.concepts.takeOut();
             }
             if (currentConcept==null) {
                 return;
+            }
+        }
+
+        if (vectorContextEnabled
+                && contextVec != null
+                && contextTerm != null
+                && contextConcept != null
+                && currentConcept.getTerm() != null
+                && !currentConcept.getTerm().equals(contextTerm)
+                && currentConcept.vector != null
+                && contextConcept.vector != null) {
+            final double sim = currentConcept.vector.similarity(contextConcept.vector);
+            if (sim > VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
+                try {
+                    final Term similarityTerm = Similarity.make(currentConcept.getTerm(), contextTerm);
+                    final BudgetValue budget = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
+                    final TruthValue truth = new TruthValue(1.0f, sim * 0.9, nar.narParameters);
+                    final Stamp stamp = new Stamp(nar, mem, Tense.Eternal);
+
+                    if (similarityTerm != null) {
+                        final Sentence<Term> bridge = new Sentence<>(similarityTerm, Symbols.JUDGMENT_MARK, truth, stamp);
+                        final Task<Term> bridgeTask = new Task<>(bridge, budget, Task.EnumType.INPUT);
+                        mem.localInference(bridgeTask, narParameters, nar);
+                    }
+                } catch (Exception ignored) {
+                    // Term construction / localInference failures should not interrupt the main loop.
+                }
             }
         }
 
@@ -84,6 +135,7 @@ public class GeneralInferenceControl {
                     currentConcept.vector.nudge(mem.lastContextVector, 0.05);
                 }
                 mem.lastContextVector = currentConcept.vector;
+                mem.lastContextTerm = currentConcept.getTerm();
             }
 
             nal.setCurrentConcept(currentConcept);
@@ -121,6 +173,7 @@ public class GeneralInferenceControl {
     }
     
     protected static void fireTaskLink(final DerivationContext nal, int termLinks) {
+        @SuppressWarnings("rawtypes")
         final Task task = nal.currentTaskLink.getTarget();
         nal.setCurrentTerm(nal.currentConcept.term);
         nal.setCurrentTaskLink(nal.currentTaskLink);
