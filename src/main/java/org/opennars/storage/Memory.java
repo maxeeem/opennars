@@ -221,6 +221,7 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             final Hypervector hv = gloveVectors.get(term.toString());
             if (hv != null) {
                 concept.vector = hv;
+                concept.hasUserVector = true;
             }
         }
 

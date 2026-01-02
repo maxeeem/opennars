@@ -65,6 +65,10 @@ public class Concept extends Item<Term> implements Serializable {
 
     // NEW: The Semantic Vector (VectorNARS)
     public Hypervector vector;
+
+    // VectorNARS: true only when the concept vector comes from a loaded embedding map (e.g., GloVe).
+    // Deterministic random vectors (Hypervector.random) keep this false.
+    public boolean hasUserVector = false;
     
     //recent events that happened before the operation the
     //concept represents was executed
@@ -142,6 +146,7 @@ public class Concept extends Item<Term> implements Serializable {
 
         // NEW: Initialize with Orthogonal Random Vector (Deterministic based on term)
         this.vector = Hypervector.random(tm.hashCode());
+        this.hasUserVector = false;
 
         this.questions = new ArrayList<>();
         this.beliefs = new ArrayList<>();

@@ -89,6 +89,13 @@ public final class VectorInference {
             return;
         }
 
+        // "Real embeddings" guard: only inject bridge associations when both terms have
+        // vectors loaded from the embedding map (e.g., GloVe). Skip concepts that only have
+        // deterministic random vectors.
+        if (!current.hasUserVector || !contextConcept.hasUserVector) {
+            return;
+        }
+
         final double sim = current.vector.similarity(contextConcept.vector);
         if (sim <= VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
             return;
