@@ -24,20 +24,13 @@
 package org.opennars.control;
 
 import org.opennars.control.concept.ProcessAnticipation;
-import org.opennars.entity.BudgetValue;
 import org.opennars.entity.Concept;
 import org.opennars.entity.Hypervector;
-import org.opennars.entity.Sentence;
 import org.opennars.entity.Task;
 import org.opennars.entity.TermLink;
-import org.opennars.entity.TruthValue;
-import org.opennars.entity.Stamp;
 import org.opennars.inference.BudgetFunctions;
 import org.opennars.inference.RuleTables;
-import org.opennars.io.Symbols;
 import org.opennars.io.events.Events;
-import org.opennars.language.Similarity;
-import org.opennars.language.Tense;
 import org.opennars.language.Term;
 import org.opennars.main.Nar;
 import org.opennars.main.Parameters;
@@ -52,22 +45,17 @@ import org.opennars.storage.Memory;
  *
  */
 public class GeneralInferenceControl {
-
-    private static final double VECTOR_BRIDGE_SIMILARITY_THRESHOLD = 0.8;
     
     public static void selectConceptForInference(final Memory mem, final Parameters narParameters, final Nar nar) {
-        final boolean vectorContextEnabled = Boolean.getBoolean("opennars.vectorContext");
-        final boolean vectorSelectionEnabled = Boolean.getBoolean("opennars.vectorConceptSelection");
-        final boolean vectorBridgeInjectionEnabled = Boolean.getBoolean("opennars.vectorBridgeInjection");
         final Concept currentConcept;
         final Hypervector contextVec;
         final Term contextTerm;
         final Concept contextConcept;
         synchronized (mem.concepts) { //modify concept bag
-            if (vectorContextEnabled) {
+            if (VectorInference.isEnabled()) {
                 contextVec = mem.lastContextVector;
                 contextTerm = mem.lastContextTerm;
-                if (vectorSelectionEnabled) {
+                if (VectorInference.isSelectionEnabled()) {
                     Concept selected = mem.concepts.takeWithContext(contextVec);
                     // If we keep re-selecting the context term itself, try once to pull a different
                     // related concept, so analogy/synonym bridging can happen.
@@ -92,33 +80,7 @@ public class GeneralInferenceControl {
             }
         }
 
-        if (vectorContextEnabled
-            && vectorBridgeInjectionEnabled
-                && contextVec != null
-                && contextTerm != null
-                && contextConcept != null
-                && currentConcept.getTerm() != null
-                && !currentConcept.getTerm().equals(contextTerm)
-                && currentConcept.vector != null
-                && contextConcept.vector != null) {
-            final double sim = currentConcept.vector.similarity(contextConcept.vector);
-            if (sim > VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
-                try {
-                    final Term similarityTerm = Similarity.make(currentConcept.getTerm(), contextTerm);
-                    final BudgetValue budget = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
-                    final TruthValue truth = new TruthValue(1.0f, sim * 0.9, nar.narParameters);
-                    final Stamp stamp = new Stamp(nar, mem, Tense.Eternal);
-
-                    if (similarityTerm != null) {
-                        final Sentence<Term> bridge = new Sentence<>(similarityTerm, Symbols.JUDGMENT_MARK, truth, stamp);
-                        final Task<Term> bridgeTask = new Task<>(bridge, budget, Task.EnumType.INPUT);
-                        mem.localInference(bridgeTask, narParameters, nar);
-                    }
-                } catch (Exception ignored) {
-                    // Term construction / localInference failures should not interrupt the main loop.
-                }
-            }
-        }
+        VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
 
         final DerivationContext nal = new DerivationContext(mem, narParameters, nar);
         boolean putBackConcept = false;
@@ -136,14 +98,7 @@ public class GeneralInferenceControl {
                 return;
             }
 
-            if (vectorContextEnabled) {
-                // VectorNARS: small Hebbian update toward the previous focus, then update focus
-                if (mem.lastContextVector != null && currentConcept.vector != null) {
-                    currentConcept.vector.nudge(mem.lastContextVector, 0.05);
-                }
-                mem.lastContextVector = currentConcept.vector;
-                mem.lastContextTerm = currentConcept.getTerm();
-            }
+            VectorInference.updateContext(mem, currentConcept);
 
             nal.setCurrentConcept(currentConcept);
             putBackConcept = fireConcept(nal, 1);

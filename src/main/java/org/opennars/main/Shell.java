@@ -24,12 +24,16 @@
 package org.opennars.main;
 
 import org.opennars.io.events.TextOutputHandler;
+import org.opennars.storage.GloVeLoader;
 import org.xml.sax.SAXException;
 
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.opennars.language.Term;
 
 /**
@@ -97,6 +101,24 @@ public class Shell {
      */
     public static void main(String[] args) throws IOException, InstantiationException, InvocationTargetException, NoSuchMethodException, 
             ParserConfigurationException, IllegalAccessException, SAXException, ClassNotFoundException, ParseException, InterruptedException {
+        String glovePath = null;
+        if (args != null && args.length > 0) {
+            final List<String> argList = new ArrayList<>(Arrays.asList(args));
+            for (int i = 0; i < argList.size(); i++) {
+                if ("--glove".equals(argList.get(i))) {
+                    if (i + 1 >= argList.size()) {
+                        System.err.println("Missing value for --glove");
+                        System.exit(1);
+                    }
+                    glovePath = argList.get(i + 1);
+                    argList.remove(i + 1);
+                    argList.remove(i);
+                    break;
+                }
+            }
+            args = argList.toArray(new String[0]);
+        }
+
         if(args.length == 0) { //in that case just run the instance
             args = new String[] { "null", "null", "null", "null"};
         }
@@ -107,6 +129,30 @@ public class Shell {
         
         log("creating Nar...");
         Nar nar = Shell.createNar(args);
+
+        if (glovePath != null) {
+            System.out.println("========================================");
+            System.out.println("   VECTOR-NARS: Loading Embeddings...");
+            System.out.println("   File: " + glovePath);
+            System.out.println("========================================");
+
+            try {
+                System.setProperty("opennars.vector", "true");
+
+                final long start = System.currentTimeMillis();
+                GloVeLoader.load(nar, new File(glovePath), 50000);
+                final long end = System.currentTimeMillis();
+
+                System.out.println("   Success! Loaded in " + (end - start) + "ms.");
+                System.out.println("   [X] Semantic Tracking");
+                System.out.println("   [X] Associative Attention");
+                System.out.println("   [X] Synonym Bridging");
+                System.out.println("========================================");
+            } catch (Exception e) {
+                System.err.println("!!! FAILED TO LOAD GLOVE !!!");
+                e.printStackTrace();
+            }
+        }
         
         if(args.length > 4) {
             log("attaching NarNode networking features to Nar...");
