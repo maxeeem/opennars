@@ -1,10 +1,7 @@
 package org.opennars.storage;
 
-import org.opennars.entity.BudgetValue;
-import org.opennars.entity.Concept;
 import org.opennars.entity.Hypervector;
 import org.opennars.entity.ProjectionMatrix;
-import org.opennars.language.Term;
 import org.opennars.main.Nar;
 
 import java.io.BufferedInputStream;
@@ -21,7 +18,9 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.StringTokenizer;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -98,8 +97,8 @@ public final class GloVeLoader {
     }
 
     private static int loadFromBinary(final Nar nar, final File cacheFile, final int expectedInputDim, final long expectedSeed, final int limit) throws IOException {
-        final BudgetValue activation = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
         final long startTime = System.currentTimeMillis();
+        final Map<String, Hypervector> map = ensureEmbeddingMap(nar);
 
         int loaded = 0;
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(cacheFile)))) {
@@ -131,11 +130,7 @@ public final class GloVeLoader {
                         bits[i] = dis.readLong();
                     }
 
-                    final Term term = Term.get(word);
-                    final Concept c = nar.memory.conceptualize(activation, term);
-                    if (c != null) {
-                        c.vector = new Hypervector(bits);
-                    }
+                    map.put(word, new Hypervector(bits));
 
                     loaded++;
                     if (loaded % 5000 == 0) {
@@ -164,8 +159,8 @@ public final class GloVeLoader {
             final long seed) throws IOException {
 
         final ProjectionMatrix proj = new ProjectionMatrix(inputDim, seed);
-        final BudgetValue activation = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
         final long startTime = System.currentTimeMillis();
+        final Map<String, Hypervector> map = ensureEmbeddingMap(nar);
 
         final int longsPerVector = 16; // 1024 bits packed into 16 longs
         final AtomicInteger totalLoaded = new AtomicInteger(0);
@@ -210,11 +205,7 @@ public final class GloVeLoader {
                         dos.writeLong(bits[i]);
                     }
 
-                    final Term term = Term.get(entry.word);
-                    final Concept c = nar.memory.conceptualize(activation, term);
-                    if (c != null) {
-                        c.vector = entry.hv;
-                    }
+                    map.put(entry.word, entry.hv);
 
                     wroteAny = true;
                     final int current = totalLoaded.incrementAndGet();
@@ -349,6 +340,13 @@ public final class GloVeLoader {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static Map<String, Hypervector> ensureEmbeddingMap(final Nar nar) {
+        if (nar.memory.gloveVectors == null) {
+            nar.memory.gloveVectors = new ConcurrentHashMap<>(64 * 1024);
+        }
+        return nar.memory.gloveVectors;
     }
 
     private static void printProgress(final int count, final long startTime) {

@@ -93,6 +93,9 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
     // VectorNARS: last concept focus context (null means no focus)
     public transient Hypervector lastContextVector = null;
     public transient Term lastContextTerm = null;
+
+    /** Optional: lazy embedding lookup by atomic term string (e.g., from GloVe). */
+    public transient Map<String, Hypervector> gloveVectors = null;
     public transient EventEmitter event;
     
     /* InnateOperator registry. Containing all registered operators of the system */
@@ -211,6 +214,14 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             }
 
             displaced = concepts.putBack(concept, cycles(narParameters.CONCEPT_FORGET_DURATIONS), this);
+        }
+
+        // Lazy vector override (if embeddings were loaded).
+        if (concept != null && gloveVectors != null) {
+            final Hypervector hv = gloveVectors.get(term.toString());
+            if (hv != null) {
+                concept.vector = hv;
+            }
         }
 
         if (displaced == null) {
