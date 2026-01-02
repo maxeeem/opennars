@@ -60,3 +60,9 @@ hs_err_pid*
 
 #project specific
 /src/genjava
+
+# local editor settings
+.vscode/
+
+# maven-shade-plugin output
+dependency-reduced-pom.xml
