@@ -80,12 +80,12 @@ public class GeneralInferenceControl {
             }
         }
 
-        VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
-
         final DerivationContext nal = new DerivationContext(mem, narParameters, nar);
         boolean putBackConcept = false;
         float forgetCycles = 0.0f;
         synchronized(currentConcept) { //use current concept (current concept is the resource)  
+            // Phase 21: bridge injection must be thread-safe and integrity-checked.
+            VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
             ProcessAnticipation.maintainDisappointedAnticipations(narParameters, currentConcept, nar);
             if(currentConcept.taskLinks.size() == 0) { //remove concepts without tasklinks and without termlinks
                 mem.concepts.pickOut(currentConcept.getTerm());

@@ -88,6 +88,12 @@ public final class VectorInference {
                 return;
             }
 
+            // Integrity fix: don't re-inject static vector associations as new evidence.
+            // Similarity statements are stored as beliefs under the *concept of the statement term itself*.
+            if (alreadyBelieves(mem, current, similarityTerm)) {
+                return;
+            }
+
             final BudgetValue budget = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
             final TruthValue truth = new TruthValue(1.0f, sim * 0.9, nar.narParameters);
             final Stamp stamp = new Stamp(nar, mem, Tense.Eternal);
@@ -98,5 +104,46 @@ public final class VectorInference {
         } catch (Exception ignored) {
             // Term construction / localInference failures should not interrupt the main loop.
         }
+    }
+
+    private static boolean alreadyBelieves(final Memory mem, final Concept current, final Term similarityTerm) {
+        if (similarityTerm == null) {
+            return false;
+        }
+
+        // Primary check: has the similarity statement already been accepted as a belief?
+        // (It will live in the concept for the similarity statement itself.)
+        if (mem != null) {
+            final Concept similarityConcept = mem.concept(similarityTerm);
+            if (similarityConcept != null && similarityConcept.beliefs != null) {
+                try {
+                    for (final Task<?> beliefTask : similarityConcept.beliefs) {
+                        if (beliefTask == null || beliefTask.sentence == null || beliefTask.sentence.term == null) {
+                            continue;
+                        }
+                        if (similarityTerm.equals(beliefTask.sentence.term)) {
+                            return true;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        // Fallback: if something stored it directly on the current concept, detect that too.
+        if (current != null && current.beliefs != null) {
+            try {
+                for (final Task<?> beliefTask : current.beliefs) {
+                    if (beliefTask == null || beliefTask.sentence == null || beliefTask.sentence.term == null) {
+                        continue;
+                    }
+                    if (similarityTerm.equals(beliefTask.sentence.term)) {
+                        return true;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
     }
 }
