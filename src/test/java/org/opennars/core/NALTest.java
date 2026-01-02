@@ -73,6 +73,23 @@ public class NALTest  {
     // exposed to be able to change it from the outside
     public static String[] directories = new String[] {"/nal/single_step/", "/nal/multi_step/", "/nal/application/"};
 
+    private static String[] getDirectories() {
+        final String configured = System.getProperty("nal.directories");
+        if (configured == null || configured.trim().isEmpty()) {
+            return directories;
+        }
+
+        final String[] parts = configured.split(",");
+        final List<String> cleaned = new ArrayList<>();
+        for (final String part : parts) {
+            final String p = part.trim();
+            if (!p.isEmpty()) {
+                cleaned.add(p);
+            }
+        }
+        return cleaned.toArray(new String[0]);
+    }
+
     public static double scoreSum = 0.0; // sum of all scores
     public static double scoreSumWithTime = 0.0; // sum of all scores
 
@@ -107,7 +124,7 @@ public class NALTest  {
     public static Collection params() {
         // return all test-paths of all files in the directories
 
-        final Map<String, Object> et = ExampleFileInput.getUnitTests(directories);
+        final Map<String, Object> et = ExampleFileInput.getUnitTests(getDirectories());
         final Collection t = et.values();
         for (final String x : et.keySet()) addTest(x);
         return t;
