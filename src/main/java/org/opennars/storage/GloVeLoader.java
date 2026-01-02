@@ -34,17 +34,35 @@ import java.util.stream.IntStream;
  */
 public final class GloVeLoader {
 
-    private static final int CACHE_VERSION = 1;
+    private static final int CACHE_VERSION = 2;
     private static final int DEFAULT_BATCH_LINES = 50_000;
+    private static final long DEFAULT_SEED = 42L;
+    private static final long MIN_CACHE_BYTES_V1 = 12L; // 3 ints
+    private static final long MIN_CACHE_BYTES_V2 = 20L; // 3 ints + 1 long
 
     private GloVeLoader() {
     }
 
     public static void load(final Nar nar, final File gloveFile, final int limit) throws IOException {
-        load(nar, gloveFile, 300, limit, 42L);
+        loadAndCount(nar, gloveFile, limit);
+    }
+
+    /**
+     * Loads vectors and returns how many were loaded. Infers input dimension from the text file.
+     */
+    public static int loadAndCount(final Nar nar, final File gloveFile, final int limit) throws IOException {
+        final int inferredDim = inferInputDim(gloveFile);
+        return loadAndCount(nar, gloveFile, inferredDim, limit, DEFAULT_SEED);
     }
 
     public static void load(final Nar nar, final File gloveFile, final int inputDim, final int limit, final long seed) throws IOException {
+        loadAndCount(nar, gloveFile, inputDim, limit, seed);
+    }
+
+    /**
+     * Loads vectors and returns how many were loaded.
+     */
+    public static int loadAndCount(final Nar nar, final File gloveFile, final int inputDim, final int limit, final long seed) throws IOException {
         if (nar == null) {
             throw new IllegalArgumentException("nar is null");
         }
@@ -60,16 +78,26 @@ public final class GloVeLoader {
 
         final File cacheFile = new File(gloveFile.getAbsolutePath() + ".bin");
         if (cacheFile.exists() && cacheFile.length() > 0) {
+            // Guard against previously-created empty header-only caches.
+            if (cacheFile.length() <= MIN_CACHE_BYTES_V1) {
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+            } else {
             System.out.println("   [Cache Detected] Loading binary vectors...");
-            loadFromBinary(nar, cacheFile, inputDim, limit);
-            return;
+                final int loaded = loadFromBinary(nar, cacheFile, inputDim, seed, limit);
+                if (loaded > 0) {
+                    return loaded;
+                }
+                // Fallback: invalid/stale cache (or contained no vectors)
+                System.out.println("   [Cache Ignored] Regenerating from text...");
+            }
         }
 
         System.out.println("   [Parsing Text] Generating hypervectors (Multi-threaded)...");
-        parseAndCache(nar, gloveFile, cacheFile, inputDim, limit, seed);
+        return parseAndCache(nar, gloveFile, cacheFile, inputDim, limit, seed);
     }
 
-    private static void loadFromBinary(final Nar nar, final File cacheFile, final int expectedInputDim, final int limit) throws IOException {
+    private static int loadFromBinary(final Nar nar, final File cacheFile, final int expectedInputDim, final long expectedSeed, final int limit) throws IOException {
         final BudgetValue activation = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
         final long startTime = System.currentTimeMillis();
 
@@ -77,12 +105,22 @@ public final class GloVeLoader {
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(cacheFile)))) {
             final int version = dis.readInt();
             if (version != CACHE_VERSION) {
-                throw new IOException("Unsupported cache version: " + version);
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+                return 0;
             }
             final int inputDim = dis.readInt();
             final int longsPerVector = dis.readInt();
-            if (inputDim != expectedInputDim) {
-                throw new IOException("Cache inputDim mismatch: expected " + expectedInputDim + " but got " + inputDim);
+            final long seed = dis.readLong();
+            if (cacheFile.length() <= MIN_CACHE_BYTES_V2) {
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+                return 0;
+            }
+            if (inputDim != expectedInputDim || seed != expectedSeed) {
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+                return 0;
             }
 
             while (limit <= 0 || loaded < limit) {
@@ -110,9 +148,14 @@ public final class GloVeLoader {
         }
 
         System.out.println("\n   Loaded " + loaded + " vectors from cache.");
+        if (loaded == 0) {
+            //noinspection ResultOfMethodCallIgnored
+            cacheFile.delete();
+        }
+        return loaded;
     }
 
-    private static void parseAndCache(
+    private static int parseAndCache(
             final Nar nar,
             final File txtFile,
             final File binFile,
@@ -134,6 +177,7 @@ public final class GloVeLoader {
             dos.writeInt(CACHE_VERSION);
             dos.writeInt(inputDim);
             dos.writeInt(longsPerVector);
+            dos.writeLong(seed);
 
             while (limit <= 0 || totalLoaded.get() < limit) {
                 final int remaining = (limit <= 0) ? Integer.MAX_VALUE : (limit - totalLoaded.get());
@@ -191,7 +235,78 @@ public final class GloVeLoader {
             throw new IOException(e);
         }
 
-        System.out.println("\n   Parsed & Cached " + totalLoaded.get() + " vectors.");
+        final int loaded = totalLoaded.get();
+        if (loaded == 0) {
+            // Don't leave behind a misleading empty cache.
+            //noinspection ResultOfMethodCallIgnored
+            binFile.delete();
+            throw new IOException("No vectors were loaded. Likely embedding dimension mismatch (expected " + inputDim + ") or malformed file: " + txtFile.getAbsolutePath());
+        }
+
+        System.out.println("\n   Parsed & Cached " + loaded + " vectors.");
+        return loaded;
+    }
+
+    private static int inferInputDim(final File gloveFile) throws IOException {
+        if (gloveFile == null) {
+            throw new IllegalArgumentException("gloveFile is null");
+        }
+        if (!gloveFile.exists()) {
+            throw new FileNotFoundException(gloveFile.getAbsolutePath());
+        }
+
+        try (BufferedReader br = new BufferedReader(new FileReader(gloveFile))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                final String trimmed = line.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                final StringTokenizer st = new StringTokenizer(trimmed);
+                final int tokenCount = st.countTokens();
+
+                // Handle word2vec-style header: "<vocabSize> <dim>"
+                if (tokenCount == 2) {
+                    final String a = st.nextToken();
+                    final String b = st.nextToken();
+                    if (isInteger(a) && isInteger(b)) {
+                        continue;
+                    }
+                }
+
+                if (tokenCount < 3) {
+                    continue;
+                }
+                final int dim = tokenCount - 1;
+                if (dim <= 0) {
+                    continue;
+                }
+                return dim;
+            }
+        }
+
+        throw new IOException("Could not infer embedding dimension from file: " + gloveFile.getAbsolutePath());
+    }
+
+    private static boolean isInteger(final String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        int i = 0;
+        final int len = s.length();
+        if (s.charAt(0) == '-') {
+            if (len == 1) {
+                return false;
+            }
+            i = 1;
+        }
+        for (; i < len; i++) {
+            final char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static List<String> readBatch(final BufferedReader br, final int maxLines) throws IOException {

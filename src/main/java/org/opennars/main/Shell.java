@@ -133,17 +133,24 @@ public class Shell {
         if (glovePath != null) {
             System.out.println("========================================");
             System.out.println("   VECTOR-NARS: Loading Embeddings...");
-            System.out.println("   File: " + glovePath);
+            final File gloveFile = new File(glovePath);
+            System.out.println("   File: " + gloveFile.getAbsolutePath());
             System.out.println("========================================");
 
             try {
-                System.setProperty("opennars.vector", "true");
-
                 final long start = System.currentTimeMillis();
-                GloVeLoader.load(nar, new File(glovePath), 50000);
+                final int loaded = GloVeLoader.loadAndCount(nar, gloveFile, 50000);
                 final long end = System.currentTimeMillis();
 
-                System.out.println("   Success! Loaded in " + (end - start) + "ms.");
+                if (loaded <= 0) {
+                    System.err.println("!!! FAILED TO LOAD GLOVE (0 vectors loaded) !!!");
+                    System.exit(1);
+                }
+
+                // Only enable vector mode once embeddings exist.
+                System.setProperty("opennars.vector", "true");
+
+                System.out.println("   Success! Loaded " + loaded + " vectors in " + (end - start) + "ms.");
                 System.out.println("   [X] Semantic Tracking");
                 System.out.println("   [X] Associative Attention");
                 System.out.println("   [X] Synonym Bridging");
@@ -151,6 +158,7 @@ public class Shell {
             } catch (Exception e) {
                 System.err.println("!!! FAILED TO LOAD GLOVE !!!");
                 e.printStackTrace();
+                System.exit(1);
             }
         }
         
