@@ -193,6 +193,9 @@ public class Shell {
             while (true) {
                 try {
                     final String line = bufIn.readLine();
+                    if (line == null) {
+                        return; // EOF
+                    }
                     if (line != null) {
                         try {
                             nar.addInput(line);
@@ -240,8 +243,14 @@ public class Shell {
         if (hasNumberOfSteps) {
             nar.cycles(numberOfSteps);
             System.exit(0);
-        } else {
+        } else if (hasInputFile) {
+            // For batch input files, keep the reasoner running continuously.
             nar.start();
+        } else {
+            // Interactive mode: do NOT start the continuous cycle loop.
+            // Nar already executes a cycle per input when not running,
+            // and entering a number runs that many cycles.
+            System.out.println("[l]: interactive step mode (type a number to run N cycles)");
         }
     }
 
