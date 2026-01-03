@@ -43,6 +43,8 @@ import org.opennars.language.Term;
 // Manage the internal working thread. Communicate with Reasoner only.
 public class Shell {
 
+    private static final String DEFAULT_GLOVE_PATH = "glove-embeddings/glove.txt";
+
     private final Nar nar;
     private PrintStream out = System.out;
     
@@ -102,6 +104,7 @@ public class Shell {
     public static void main(String[] args) throws IOException, InstantiationException, InvocationTargetException, NoSuchMethodException, 
             ParserConfigurationException, IllegalAccessException, SAXException, ClassNotFoundException, ParseException, InterruptedException {
         String glovePath = null;
+        boolean explicitGlovePath = false;
         if (args != null && args.length > 0) {
             final List<String> argList = new ArrayList<>(Arrays.asList(args));
             for (int i = 0; i < argList.size(); i++) {
@@ -111,12 +114,18 @@ public class Shell {
                         System.exit(1);
                     }
                     glovePath = argList.get(i + 1);
+                    explicitGlovePath = true;
                     argList.remove(i + 1);
                     argList.remove(i);
                     break;
                 }
             }
             args = argList.toArray(new String[0]);
+        }
+
+        // If vector mode is explicitly enabled and no override was provided, try a default glove path.
+        if (glovePath == null && Boolean.getBoolean("opennars.vector")) {
+            glovePath = DEFAULT_GLOVE_PATH;
         }
 
         if(args.length == 0) { //in that case just run the instance
@@ -137,28 +146,45 @@ public class Shell {
             System.out.println("   File: " + gloveFile.getAbsolutePath());
             System.out.println("========================================");
 
-            try {
-                final long start = System.currentTimeMillis();
-                final int loaded = GloVeLoader.loadAndCount(nar, gloveFile, 50000);
-                final long end = System.currentTimeMillis();
-
-                if (loaded <= 0) {
-                    System.err.println("!!! FAILED TO LOAD GLOVE (0 vectors loaded) !!!");
+            if (!gloveFile.exists() || !gloveFile.isFile()) {
+                if (explicitGlovePath) {
+                    System.err.println("!!! FAILED TO LOAD GLOVE (file not found) !!!");
                     System.exit(1);
+                } else {
+                    System.out.println("   Note: Default GloVe file not found; continuing without embeddings.");
                 }
+            } else {
+                try {
+                    final long start = System.currentTimeMillis();
+                    final int loaded = GloVeLoader.loadAndCount(nar, gloveFile, 50000);
+                    final long end = System.currentTimeMillis();
 
-                // Only enable vector mode once embeddings exist.
-                System.setProperty("opennars.vector", "true");
+                    if (loaded <= 0) {
+                        if (explicitGlovePath) {
+                            System.err.println("!!! FAILED TO LOAD GLOVE (0 vectors loaded) !!!");
+                            System.exit(1);
+                        } else {
+                            System.out.println("   Note: Default GloVe loaded 0 vectors; continuing without embeddings.");
+                        }
+                    } else {
+                        // Convenience: enable vector mode once embeddings exist (especially when using --glove).
+                        System.setProperty("opennars.vector", "true");
 
-                System.out.println("   Success! Loaded " + loaded + " vectors in " + (end - start) + "ms.");
-                System.out.println("   [X] Semantic Tracking");
-                System.out.println("   [X] Associative Attention");
-                System.out.println("   [X] Synonym Bridging");
-                System.out.println("========================================");
-            } catch (Exception e) {
-                System.err.println("!!! FAILED TO LOAD GLOVE !!!");
-                e.printStackTrace();
-                System.exit(1);
+                        System.out.println("   Success! Loaded " + loaded + " vectors in " + (end - start) + "ms.");
+                        System.out.println("   [X] Semantic Tracking");
+                        System.out.println("   [X] Associative Attention");
+                        System.out.println("   [X] Synonym Bridging");
+                        System.out.println("========================================");
+                    }
+                } catch (Exception e) {
+                    if (explicitGlovePath) {
+                        System.err.println("!!! FAILED TO LOAD GLOVE !!!");
+                        e.printStackTrace();
+                        System.exit(1);
+                    } else {
+                        System.out.println("   Note: Default GloVe load failed; continuing without embeddings.");
+                    }
+                }
             }
         }
         

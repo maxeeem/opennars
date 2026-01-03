@@ -25,8 +25,8 @@ public class RealSynonymTest {
 
     @Test
     public void testRealWorldGroundingMiniGlove() throws Exception {
-        final String prev = System.getProperty("opennars.vectorContext");
-        System.setProperty("opennars.vectorContext", "true");
+        final String prev = System.getProperty("opennars.vector");
+        System.setProperty("opennars.vector", "true");
         try {
             final Nar nar = new Nar();
 
@@ -73,9 +73,9 @@ public class RealSynonymTest {
             assertTrue("System should infer <kitten --> furry> via projected GloVe vectors", success[0]);
         } finally {
             if (prev == null) {
-                System.clearProperty("opennars.vectorContext");
+                System.clearProperty("opennars.vector");
             } else {
-                System.setProperty("opennars.vectorContext", prev);
+                System.setProperty("opennars.vector", prev);
             }
         }
     }

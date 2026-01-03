@@ -38,8 +38,6 @@ public class VectorNarsTest {
 
     @Test
     public void testVectorOverridesPriority() throws Exception {
-        System.setProperty("opennars.vectorContext", "true");
-
         final Nar nar = new Nar();
 
         // Use a deterministic tiny bag so baseline selection is not probabilistic.
@@ -56,8 +54,11 @@ public class VectorNarsTest {
         conceptA.vector = complementOf(contextVec);
 
         // Contender B: lower priority, but perfectly relevant (identical => similarity 1.0)
-        final Concept conceptB = new Concept(new BudgetValue(0.4f, 0.5f, 0.5f, nar.memory.narParameters), new Term("B"), nar.memory);
-        conceptB.setPriority(0.4f);
+        // With current scoring: score = priority * (0.8 + 0.2 * similarity)
+        // A: 0.6 * (0.8 + 0.2 * 0.0) = 0.48
+        // B: 0.5 * (0.8 + 0.2 * 1.0) = 0.50
+        final Concept conceptB = new Concept(new BudgetValue(0.5f, 0.5f, 0.5f, nar.memory.narParameters), new Term("B"), nar.memory);
+        conceptB.setPriority(0.5f);
         conceptB.vector = contextVec;
 
         bag.putIn(conceptA);
@@ -67,9 +68,6 @@ public class VectorNarsTest {
         assertEquals(0.0, conceptA.vector.similarity(contextVec), 1e-9);
         assertEquals(1.0, conceptB.vector.similarity(contextVec), 1e-9);
 
-        // Predicted scores:
-        // A: 0.6 * (0.3 + 0.7 * 0.0) = 0.18
-        // B: 0.4 * (0.3 + 0.7 * 1.0) = 0.40
         final Concept selected = bag.takeWithContext(contextVec);
 
         assertNotNull("Should select a concept", selected);
@@ -78,8 +76,6 @@ public class VectorNarsTest {
 
     @Test
     public void testBaselinePriorityWinsWithoutContext() throws Exception {
-        System.clearProperty("opennars.vectorContext");
-
         final Nar nar = new Nar();
         final Bag<Concept, Term> bag = new Bag<>(2, 3, 0);
 

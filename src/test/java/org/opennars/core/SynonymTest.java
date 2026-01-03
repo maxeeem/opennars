@@ -8,6 +8,7 @@ import org.opennars.entity.BudgetValue;
 import org.opennars.entity.Concept;
 import org.opennars.entity.Hypervector;
 import org.opennars.entity.Sentence;
+import org.opennars.control.VectorInference;
 import org.opennars.io.events.AnswerHandler;
 import org.opennars.language.Term;
 import org.opennars.main.Nar;
@@ -25,8 +26,8 @@ public class SynonymTest {
 
     @Test
     public void testSynonymInference() throws Exception {
-        final String prev = System.getProperty("opennars.vectorContext");
-        System.setProperty("opennars.vectorContext", "true");
+        final String prev = System.getProperty("opennars.vector");
+        System.setProperty("opennars.vector", "true");
         try {
             final Nar nar = new Nar();
 
@@ -43,9 +44,22 @@ public class SynonymTest {
             final Hypervector shared = Hypervector.random(100);
             cat.vector = shared;
             kitty.vector = shared;
+            cat.hasUserVector = true;
+            kitty.hasUserVector = true;
 
             // Teach knowledge about cat.
             nar.addInput("<cat --> furry>.");
+
+                // Deterministically inject the similarity bridge based on the shared vector.
+                // This avoids relying on probabilistic concept sampling for the bridge to appear.
+                VectorInference.processBridge(
+                    nar.memory,
+                    nar.narParameters,
+                    nar,
+                    cat,
+                    kitty.vector,
+                    termKitty,
+                    kitty);
 
             // Let the knowledge settle a bit.
             for (int i = 0; i < 25; i++) {
@@ -73,9 +87,9 @@ public class SynonymTest {
             assertTrue("System should infer <kitty --> furry> via vector analogy", success[0]);
         } finally {
             if (prev == null) {
-                System.clearProperty("opennars.vectorContext");
+                System.clearProperty("opennars.vector");
             } else {
-                System.setProperty("opennars.vectorContext", prev);
+                System.setProperty("opennars.vector", prev);
             }
         }
     }

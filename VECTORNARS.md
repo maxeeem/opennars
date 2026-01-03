@@ -54,7 +54,7 @@ Memory.java: Added transient storage for lastContextVector.
 
 Build & Config
 
-Flag: Features are controlled via -Dopennars.vector=true and -Dopennars.vectorBridgeInjection=true.
+Flag: Features are controlled via `-Dopennars.vector=true`.
 
 Default: OFF (Zero regression for standard users).
 
@@ -80,11 +80,12 @@ The jar’s `Main-Class` is `org.opennars.main.Shell`, which expects **4 positio
 
 To load GloVe embeddings and run a `.nal` script (recommended for reproducible runs), do:
 
-`java -Dopennars.vector=true -Dopennars.vectorContext=true -Dopennars.vectorBridgeInjection=true -jar target/opennars-3.0.4-SNAPSHOT.jar null null glove-embeddings/phase21_hulk_irrational.nal 0 --glove glove-embeddings/glove.txt`
+`java -Dopennars.vector=true -jar target/opennars-3.0.4-SNAPSHOT.jar null null glove-embeddings/phase21_hulk_irrational.nal 0 --glove glove-embeddings/glove.txt`
 
 Notes:
 
-- `--glove <path>` loads embeddings (and will also set `opennars.vector=true` internally once loading succeeds).
+- If `-Dopennars.vector=true` is set and `glove-embeddings/glove.txt` exists, the CLI will auto-load it by default.
+- `--glove <path>` overrides the default location (and will also set `opennars.vector=true` internally once loading succeeds).
 - The example above sets `cyclesToRunOrNull=0` so the process exits after the input file is processed.
 - This specific `.nal` script contains a final line `5000`, which triggers 5000 cycles inside the engine.
 
@@ -92,6 +93,26 @@ Notes:
 
 If you run only:
 
-`java -Dopennars.vector=true -Dopennars.vectorBridgeInjection=true -jar target/opennars-3.0.4-SNAPSHOT.jar --glove glove-embeddings/glove.txt`
+`java -Dopennars.vector=true -jar target/opennars-3.0.4-SNAPSHOT.jar --glove glove-embeddings/glove.txt`
 
 …the system loads embeddings and then enters interactive step mode waiting for input / cycle counts from stdin. If you Ctrl-C, you’ll see exit code `130`.
+
+---
+
+## Running NAL Test Suites (Single-step / Multi-step)
+
+The NAL regression suites are run via JUnit (`org.opennars.core.NALTest`). You can select which suite runs by setting `-Dnal.directories=...`.
+
+Important: to actually enable VectorNARS during these tests, pass the JVM system property `-Dopennars.vector=true` on the Maven command line (this propagates into the forked Surefire test JVM).
+
+### Single-step
+
+`mvn -Dtest=org.opennars.core.NALTest -Dnal.directories=/nal/single_step/ -Dopennars.vector=true test`
+
+### Multi-step
+
+`mvn -Dtest=org.opennars.core.NALTest -Dnal.directories=/nal/multi_step/ -Dopennars.vector=true test`
+
+At the end of the Maven output you’ll see a summary like:
+
+`Tests run: <N>, Failures: <F>, Errors: <E>, Skipped: <S>`

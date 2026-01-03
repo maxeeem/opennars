@@ -23,12 +23,8 @@ public class HulkIrrationalGloveTest {
     @Test
     public void testPhase21HulkIrrationalWithLocalGlove() throws Exception {
         final String prevVector = System.getProperty("opennars.vector");
-        final String prevVectorContext = System.getProperty("opennars.vectorContext");
-        final String prevVectorBridgeInjection = System.getProperty("opennars.vectorBridgeInjection");
 
         System.setProperty("opennars.vector", "true");
-        System.setProperty("opennars.vectorContext", "true");
-        System.setProperty("opennars.vectorBridgeInjection", "true");
 
         try {
             final File gloveFile = new File("glove-embeddings/glove.txt");
@@ -69,8 +65,6 @@ public class HulkIrrationalGloveTest {
             assertTrue("Expected an answer for <hulk --> irrational> within 5000 cycles", success[0]);
         } finally {
             restoreProperty("opennars.vector", prevVector);
-            restoreProperty("opennars.vectorContext", prevVectorContext);
-            restoreProperty("opennars.vectorBridgeInjection", prevVectorBridgeInjection);
         }
     }
 

@@ -56,19 +56,15 @@ public class GeneralInferenceControl {
             if (VectorInference.isEnabled()) {
                 contextVec = mem.lastContextVector;
                 contextTerm = mem.lastContextTerm;
-                if (VectorInference.isSelectionEnabled()) {
-                    Concept selected = mem.concepts.takeWithContext(contextVec);
-                    // If we keep re-selecting the context term itself, try once to pull a different
-                    // related concept, so analogy/synonym bridging can happen.
-                    if (selected != null && contextTerm != null && contextTerm.equals(selected.getTerm())) {
-                        final Concept alternate = mem.concepts.takeWithContext(contextVec);
-                        mem.concepts.putIn(selected);
-                        selected = (alternate != null) ? alternate : selected;
-                    }
-                    currentConcept = selected;
-                } else {
-                    currentConcept = mem.concepts.takeOut();
+                Concept selected = mem.concepts.takeWithContext(contextVec);
+                // If we keep re-selecting the context term itself, try once to pull a different
+                // related concept, so analogy/synonym bridging can happen.
+                if (selected != null && contextTerm != null && contextTerm.equals(selected.getTerm())) {
+                    final Concept alternate = mem.concepts.takeWithContext(contextVec);
+                    mem.concepts.putIn(selected);
+                    selected = (alternate != null) ? alternate : selected;
                 }
+                currentConcept = selected;
                 contextConcept = (contextTerm != null) ? mem.concept(contextTerm) : null;
             } else {
                 contextVec = null;

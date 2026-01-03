@@ -23,26 +23,12 @@ public final class VectorInference {
     }
 
     public static boolean isEnabled() {
-        return Boolean.getBoolean("opennars.vector") || Boolean.getBoolean("opennars.vectorContext");
-    }
-
-    public static boolean isSelectionEnabled() {
-        if (Boolean.getBoolean("opennars.vectorConceptSelection")) {
-            return true;
-        }
-        return Boolean.getBoolean("opennars.vector");
-    }
-
-    private static boolean isBridgeEnabled() {
-        if (Boolean.getBoolean("opennars.vectorBridgeInjection")) {
-            return true;
-        }
         return Boolean.getBoolean("opennars.vector");
     }
 
     public static void updateContext(final Memory mem, final Concept current) {
-        // Context steering should only happen when explicitly enabled.
-        if (!Boolean.getBoolean("opennars.vectorContext") || !isEnabled()) {
+        // Vector features are gated behind a single flag.
+        if (!isEnabled()) {
             return;
         }
 
@@ -83,7 +69,7 @@ public final class VectorInference {
             final Term contextTerm,
             final Concept contextConcept) {
 
-        if (!isEnabled() || !isBridgeEnabled()) {
+        if (!isEnabled()) {
             return;
         }
 
