@@ -57,3 +57,41 @@ Build & Config
 Flag: Features are controlled via -Dopennars.vector=true and -Dopennars.vectorBridgeInjection=true.
 
 Default: OFF (Zero regression for standard users).
+
+---
+
+## Build & Run (Jar + GloVe)
+
+### Rebuild the jar
+
+This repo currently runs the javadoc-jar goal during `package`, which can fail on newer JDKs. If you hit a javadoc plugin error, skip javadocs:
+
+`mvn -Dmaven.javadoc.skip=true package`
+
+The runnable jar will be in:
+
+`target/opennars-3.0.4-SNAPSHOT.jar`
+
+### Run with VectorNARS flags (non-interactive)
+
+The jar’s `Main-Class` is `org.opennars.main.Shell`, which expects **4 positional arguments**:
+
+`narOrConfigFileOrNull idOrNull nalFileOrNull cyclesToRunOrNull`
+
+To load GloVe embeddings and run a `.nal` script (recommended for reproducible runs), do:
+
+`java -Dopennars.vector=true -Dopennars.vectorContext=true -Dopennars.vectorBridgeInjection=true -jar target/opennars-3.0.4-SNAPSHOT.jar null null glove-embeddings/phase21_hulk_irrational.nal 0 --glove glove-embeddings/glove.txt`
+
+Notes:
+
+- `--glove <path>` loads embeddings (and will also set `opennars.vector=true` internally once loading succeeds).
+- The example above sets `cyclesToRunOrNull=0` so the process exits after the input file is processed.
+- This specific `.nal` script contains a final line `5000`, which triggers 5000 cycles inside the engine.
+
+### Interactive mode (what *not* to do)
+
+If you run only:
+
+`java -Dopennars.vector=true -Dopennars.vectorBridgeInjection=true -jar target/opennars-3.0.4-SNAPSHOT.jar --glove glove-embeddings/glove.txt`
+
+…the system loads embeddings and then enters interactive step mode waiting for input / cycle counts from stdin. If you Ctrl-C, you’ll see exit code `130`.
