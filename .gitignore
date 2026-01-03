@@ -66,3 +66,10 @@ hs_err_pid*
 
 # maven-shade-plugin output
 dependency-reduced-pom.xml
+
+# Local VectorNARS test assets (too large for git)
+/vector-test/glove.txt
+/vector-test/glove.txt.bin
+
+# Alternate local embeddings location
+/glove-embeddings/
