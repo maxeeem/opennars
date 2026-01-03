@@ -401,11 +401,13 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
                 if (focusTerm != null && !(focusTerm instanceof Interval)) {
                     focusTerm = CompoundTerm.replaceIntervals(focusTerm);
                     final Concept focusConcept = concept(focusTerm); // existing only; no side effects
-                    final Hypervector focusVector = (focusConcept != null && focusConcept.vector != null)
-                            ? focusConcept.vector
-                            : Hypervector.random(focusTerm.hashCode());
-                    this.lastContextVector = focusVector;
-                    this.lastContextTerm = focusTerm;
+                    // Real-context guard: only update context when the focus term has a real embedding.
+                    // If embeddings aren't loaded (or this term isn't in the embedding map), do nothing
+                    // so random placeholder vectors can't steer attention.
+                    if (focusConcept != null && focusConcept.hasUserVector && focusConcept.vector != null) {
+                        this.lastContextVector = focusConcept.vector;
+                        this.lastContextTerm = focusTerm;
+                    }
                 }
             }
 

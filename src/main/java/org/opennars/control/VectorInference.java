@@ -41,8 +41,29 @@ public final class VectorInference {
     }
 
     public static void updateContext(final Memory mem, final Concept current) {
-        if (!isEnabled()) {
+        // Context steering should only happen when explicitly enabled.
+        if (!Boolean.getBoolean("opennars.vectorContext") || !isEnabled()) {
             return;
+        }
+
+        if (mem == null || current == null) {
+            return;
+        }
+
+        // Real-context guard: do not let deterministic random placeholder vectors steer attention.
+        // Only concepts with embeddings loaded from the embedding map are allowed to update context.
+        if (!current.hasUserVector || current.vector == null) {
+            return;
+        }
+
+        // Only nudge when the previous context also came from a real embedding.
+        if (mem.lastContextTerm != null) {
+            final Concept previousContextConcept = mem.concept(mem.lastContextTerm);
+            if (previousContextConcept == null || !previousContextConcept.hasUserVector) {
+                // Treat the previous context as invalid/non-semantic.
+                mem.lastContextVector = null;
+                mem.lastContextTerm = null;
+            }
         }
 
         if (mem.lastContextVector != null && current.vector != null) {
@@ -86,13 +107,6 @@ public final class VectorInference {
                 || current.getTerm().equals(contextTerm)
                 || current.vector == null
                 || contextConcept.vector == null) {
-            return;
-        }
-
-        // "Real embeddings" guard: only inject bridge associations when both terms have
-        // vectors loaded from the embedding map (e.g., GloVe). Skip concepts that only have
-        // deterministic random vectors.
-        if (!current.hasUserVector || !contextConcept.hasUserVector) {
             return;
         }
 
