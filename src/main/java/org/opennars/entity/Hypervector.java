@@ -88,6 +88,27 @@ public class Hypervector implements Serializable {
         }
     }
 
+    /**
+     * Hebbian Learning (Nudge), float overload.
+     * @param target The vector to learn from.
+     * @param rate Probability of flipping a bit to match target (0.0f - 1.0f).
+     */
+    public void nudge(final Hypervector target, final float rate) {
+        nudge(target, (double) rate);
+    }
+
+    /**
+     * Bitwise inversion (NOT) over all 1024 bits.
+     * Useful for repulsion learning via nudge(target.invert(), rate).
+     */
+    public Hypervector invert() {
+        final long[] inverted = new long[LONGS];
+        for (int i = 0; i < LONGS; i++) {
+            inverted[i] = ~this.bits[i];
+        }
+        return new Hypervector(inverted, true);
+    }
+
     private static long deterministicSeed(long[] a, long[] b) {
         // FNV-1a 64-bit hash over both vectors (stable across runs)
         long h = 0xcbf29ce484222325L;
