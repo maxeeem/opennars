@@ -8,6 +8,7 @@ import java.util.Random;
  * Uses 1024-bit binary vectors packed into longs.
  */
 public class Hypervector implements Serializable {
+    private static final long serialVersionUID = 1L;
     // 1024 bits / 64 bits-per-long = 16 longs
     private static final int LONGS = 16; 
     private final long[] bits;
