@@ -96,6 +96,10 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
     public transient Hypervector lastContextVector = null;
     public transient Term lastContextTerm = null;
 
+    // VectorNARS: recently injected bridge statements (cooldown guard)
+    // Keyed by an order-independent pair of term strings.
+    public transient LinkedHashMap<String, Long> vectorBridgeLastInjected = new LinkedHashMap<>();
+
     /** Optional: lazy embedding lookup by atomic term string (e.g., from GloVe). */
     public transient Map<String, Hypervector> gloveVectors = null;
     public transient EventEmitter event;

@@ -102,10 +102,8 @@ public class GeneralInferenceControl {
         float forgetCycles = 0.0f;
         synchronized(currentConcept) { //use current concept (current concept is the resource)  
             // VectorNARS: inject bridge associations at most once per concept-cycle.
-            // Suppress them entirely when any goal/quest is pending (goal-focused mode).
-            if (!globalGoalOrQuestMode) {
-                VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept);
-            }
+            // Always run, but allow VectorInference to throttle injection when goal/quest activity exists.
+            VectorInference.processBridge(mem, narParameters, nar, currentConcept, contextVec, contextTerm, contextConcept, globalGoalOrQuestMode);
             ProcessAnticipation.maintainDisappointedAnticipations(narParameters, currentConcept, nar);
             if(currentConcept.taskLinks.size() == 0) { //remove concepts without tasklinks and without termlinks
                 mem.concepts.pickOut(currentConcept.getTerm());

@@ -15,9 +15,10 @@ import org.opennars.main.Nar;
 import org.opennars.main.Parameters;
 import org.opennars.storage.Memory;
 
-public final class VectorInference {
+import java.util.Iterator;
+import java.util.Map;
 
-    private static final double VECTOR_BRIDGE_SIMILARITY_THRESHOLD = 0.8;
+public final class VectorInference {
 
     private VectorInference() {
     }
@@ -67,22 +68,15 @@ public final class VectorInference {
             final Concept current,
             final Hypervector contextVec,
             final Term contextTerm,
-            final Concept contextConcept) {
+            final Concept contextConcept,
+            final boolean anyGoalOrQuestExists) {
 
         if (!isEnabled()) {
             return;
         }
 
-        // No-nonsense bridge guard:
-        // When a concept is actively involved in Goal/Quest processing (desires/quests pending),
-        // do not inject fuzzy similarity associations that can dilute procedural confidence.
-        try {
-            if (current != null
-                    && ((current.desires != null && !current.desires.isEmpty())
-                    || (current.quests != null && !current.quests.isEmpty()))) {
-                return;
-            }
-        } catch (Exception ignored) {
+        if (narParameters == null || !narParameters.VECTOR_BRIDGE_ENABLED) {
+            return;
         }
 
         if (contextVec == null
@@ -96,8 +90,42 @@ public final class VectorInference {
             return;
         }
 
+        if (narParameters.VECTOR_BRIDGE_SKIP_SELF) {
+            try {
+                if (Term.isSelf(current.getTerm()) || Term.isSelf(contextTerm)) {
+                    if (narParameters.VECTOR_BRIDGE_LOG) {
+                        System.out.println("[VectorBridge] skip reason=self term=" + current.getTerm() + " ctx=" + contextTerm);
+                    }
+                    return;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        // Real-vector guard: avoid random placeholder vectors causing spammy bridges.
+        if (narParameters.VECTOR_BRIDGE_REQUIRE_USER_VECTORS) {
+            if (!current.hasUserVector || !contextConcept.hasUserVector) {
+                if (narParameters.VECTOR_BRIDGE_LOG) {
+                    System.out.println("[VectorBridge] skip reason=noUserVector cur=" + current.getTerm() + " ctx=" + contextTerm);
+                }
+                return;
+            }
+        }
+
         final double sim = current.vector.similarity(contextConcept.vector);
-        if (sim <= VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
+        if (sim <= narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
+            if (narParameters.VECTOR_BRIDGE_LOG) {
+                System.out.println("[VectorBridge] skip reason=belowThreshold sim=" + sim + " thr=" + narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD);
+            }
+            return;
+        }
+
+        final String key = bridgeKey(current.getTerm(), contextTerm);
+        final long now = (nar != null) ? nar.time() : System.currentTimeMillis();
+        if (isRecentlyInjected(mem, key, now, narParameters.VECTOR_BRIDGE_COOLDOWN)) {
+            if (narParameters.VECTOR_BRIDGE_LOG) {
+                System.out.println("[VectorBridge] skip reason=cooldown key=" + key);
+            }
             return;
         }
 
@@ -110,18 +138,87 @@ public final class VectorInference {
             // Integrity fix: don't re-inject static vector associations as new evidence.
             // Similarity statements are stored as beliefs under the *concept of the statement term itself*.
             if (alreadyBelieves(mem, current, similarityTerm)) {
+                if (narParameters.VECTOR_BRIDGE_LOG) {
+                    System.out.println("[VectorBridge] skip reason=alreadyBelieves term=" + similarityTerm);
+                }
                 return;
             }
 
-            final BudgetValue budget = new BudgetValue(1.0f, 0.9f, 1.0f, nar.narParameters);
+            float prio = 1.0f;
+            float dura = 0.9f;
+            float qual = 1.0f;
+            if (anyGoalOrQuestExists) {
+                final float factor = narParameters.VECTOR_BRIDGE_THROTTLE_FACTOR_WHEN_GOAL_OR_QUEST;
+                prio = clamp01(prio * factor);
+                dura = clamp01(dura * factor);
+                if (narParameters.VECTOR_BRIDGE_LOG) {
+                    System.out.println("[VectorBridge] throttle factor=" + factor + " (goal/quest active)");
+                }
+            }
+
+            final BudgetValue budget = new BudgetValue(prio, dura, qual, nar.narParameters);
             final TruthValue truth = new TruthValue(1.0f, sim * 0.9, nar.narParameters);
             final Stamp stamp = new Stamp(nar, mem, Tense.Present);
 
             final Sentence<Term> bridge = new Sentence<>(similarityTerm, Symbols.JUDGMENT_MARK, truth, stamp);
             final Task<Term> bridgeTask = new Task<>(bridge, budget, Task.EnumType.INPUT);
             mem.localInference(bridgeTask, narParameters, nar);
+
+            markInjected(mem, key, now, narParameters.VECTOR_BRIDGE_RECENT_MAX);
+            if (narParameters.VECTOR_BRIDGE_LOG) {
+                System.out.println("[VectorBridge] inject sim=" + sim + " task=" + similarityTerm + " prio=" + prio + " dura=" + dura);
+            }
         } catch (Exception ignored) {
             // Term construction / localInference failures should not interrupt the main loop.
+        }
+    }
+
+    private static float clamp01(final float v) {
+        if (v < 0.0f) {
+            return 0.0f;
+        }
+        if (v > 1.0f) {
+            return 1.0f;
+        }
+        return v;
+    }
+
+    private static String bridgeKey(final Term a, final Term b) {
+        final String sa = (a != null) ? a.toString() : "";
+        final String sb = (b != null) ? b.toString() : "";
+        if (sa.compareTo(sb) <= 0) {
+            return sa + "||" + sb;
+        }
+        return sb + "||" + sa;
+    }
+
+    private static boolean isRecentlyInjected(final Memory mem, final String key, final long now, final long cooldown) {
+        if (mem == null || key == null || key.isEmpty() || cooldown <= 0) {
+            return false;
+        }
+        try {
+            final Long last = mem.vectorBridgeLastInjected.get(key);
+            return last != null && (now - last) < cooldown;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void markInjected(final Memory mem, final String key, final long now, final int maxEntries) {
+        if (mem == null || key == null || key.isEmpty()) {
+            return;
+        }
+        try {
+            mem.vectorBridgeLastInjected.put(key, now);
+            final int max = (maxEntries > 0) ? maxEntries : 0;
+            if (max > 0 && mem.vectorBridgeLastInjected.size() > max) {
+                final Iterator<Map.Entry<String, Long>> it = mem.vectorBridgeLastInjected.entrySet().iterator();
+                while (mem.vectorBridgeLastInjected.size() > max && it.hasNext()) {
+                    it.next();
+                    it.remove();
+                }
+            }
+        } catch (Exception ignored) {
         }
     }
 
