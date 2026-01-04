@@ -168,8 +168,11 @@ public final class VectorInference {
             if (narParameters.VECTOR_BRIDGE_LOG) {
                 System.out.println("[VectorBridge] inject sim=" + sim + " task=" + similarityTerm + " prio=" + prio + " dura=" + dura);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
             // Term construction / localInference failures should not interrupt the main loop.
+            if (narParameters.VECTOR_BRIDGE_LOG) {
+                System.out.println("[VectorBridge] skip reason=exception type=" + e.getClass().getSimpleName() + " msg=" + e.getMessage());
+            }
         }
     }
 
@@ -209,6 +212,11 @@ public final class VectorInference {
             return;
         }
         try {
+            // Keep eviction roughly LRU-by-injection (LinkedHashMap is insertion-order by default).
+            // Updating an existing key doesn't move it to the end, so we remove+put.
+            if (mem.vectorBridgeLastInjected.containsKey(key)) {
+                mem.vectorBridgeLastInjected.remove(key);
+            }
             mem.vectorBridgeLastInjected.put(key, now);
             final int max = (maxEntries > 0) ? maxEntries : 0;
             if (max > 0 && mem.vectorBridgeLastInjected.size() > max) {
