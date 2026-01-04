@@ -73,3 +73,10 @@ dependency-reduced-pom.xml
 
 # Alternate local embeddings location
 /glove-embeddings/
+
+# Retina edition runtime artifacts
+__pycache__/
+*.pyc
+/retina_cache/
+/clip_embeddings.txt
+/clip_embeddings.txt.bin
