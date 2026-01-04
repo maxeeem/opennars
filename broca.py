@@ -84,7 +84,7 @@ class NarsOrganism:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             bufsize=1  # Line buffered
         )
@@ -94,7 +94,7 @@ class NarsOrganism:
         return True
 
     def _listen(self):
-        """Monitors NARS stdout for [OUTPUT] speech or errors."""
+        """Monitors NARS stdout for [OUTPUT] speech, errors, and internal logs."""
         while self.listening and self.process and self.process.poll() is None:
             try:
                 line = self.process.stdout.readline()
@@ -103,24 +103,27 @@ class NarsOrganism:
 
                 clean_line = line.strip()
 
-                # The 'Filter': We only care about what NARS ^says
+                # Filtering disabled: show internal logs too
                 if "[OUTPUT]" in clean_line:
                     content = clean_line.split("[OUTPUT]")[1].strip()
-                    print(f"\n📢 NARS SAYS: '{content}'")
+                    print(f"\n[NARS] SAYS: '{content}'")
                 elif "Exception" in clean_line:
-                    print(f"\n❌ NARS ERROR: {clean_line}")
-                # else:
-                #     # Uncomment to see internal NARS logs
-                #     print(f"[Internal]: {clean_line}")
+                    print(f"\n[NARS] ERROR: {clean_line}")
+                else:
+                    print(f"[NARS] {clean_line}")
             except Exception as e:
                 print(f"[Listener Error] {e}")
 
-    def speak(self, text):
-        """Sends Narsese to the inputs."""
+    def speak(self, text, cycles=100):
+        """Sends input AND drives the clock (cycles)."""
         if self.process:
             print(f"Teacher: {text}")
             try:
+                # 1) Send the thought
                 self.process.stdin.write(text + "\n")
+                # 2) Drive the clock so shell mode actually processes it
+                if cycles and cycles > 0:
+                    self.process.stdin.write(str(cycles) + "\n")
                 self.process.stdin.flush()
             except BrokenPipeError:
                 print("[Error] NARS process died.")
@@ -154,18 +157,18 @@ def run_curriculum():
     try:
         # 3. Lesson 1: Self-Awareness (Testing ^say)
         print("\n--- Lesson 1: The Voice ---")
-        nars.speak("<(*, {SELF}, hello_world) --> ^say>! :|:")
+        nars.speak("<(*, {SELF}, hello_world) --> ^say>! :|:", cycles=100)
         time.sleep(2)
 
         # 4. Lesson 2: Visual Grounding (The CLIP Test)
         print("\n--- Lesson 2: Associations ---")
 
         # We tell it a Wolf is aggressive.
-        nars.speak("<wolf --> [aggressive]>.")
+        nars.speak("<wolf --> [aggressive]>.", cycles=10)
 
         # We ask if a Dog is aggressive.
         # NARS must use CLIP similarity (Wolf~Dog) to answer.
-        nars.speak("<dog --> [aggressive]>?")
+        nars.speak("<dog --> [aggressive]>?", cycles=500)
 
         print("\n[System] Interactive Mode (Type 'exit' to quit):")
         while True:
@@ -173,7 +176,7 @@ def run_curriculum():
                 user_input = input("> ")
                 if user_input.lower() == "exit":
                     break
-                nars.speak(user_input)
+                nars.speak(user_input, cycles=100)
             except EOFError:
                 break
 
