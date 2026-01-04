@@ -33,21 +33,16 @@ IMAGE_DIR = "retina_cache"
 # Seed used for deterministic random vectors / projection.
 RNG_SEED = 1337
 
-# Map abstract sensations to real image URLs.
+# Map abstract sensations to deterministic local procedural images.
 # These token names are what NARS sees (opaque signals), not the labels.
+# Order matters: we want train vectors available before ablating test vectors.
 VISUAL_STIMULI = {
-    # Training water-flow stimulus
-    "sensation_W1": "https://commons.wikimedia.org/wiki/Special:FilePath/Water_tap_running.jpg?width=240",
-    # Test water-flow stimulus (novel variant)
-    "sensation_W2": "https://commons.wikimedia.org/wiki/Special:FilePath/Waterfall_in_Iceland.jpg?width=240",
-    # Distractor non-water stimulus
-    "sensation_N1": "https://commons.wikimedia.org/wiki/Special:FilePath/Electric_fan.jpg?width=240",
-}
-
-# Harness-side ground-truth (NEVER injected during TEST).
-GROUND_TRUTH: dict[str, str | None] = {
-    "sensation_W2": "water",
-    "sensation_N1": None,
+    # Train
+    "sensation_W1": "procedural:water_train",
+    "sensation_N1": "procedural:wind_train",
+    # Test (novel variants)
+    "sensation_W2": "procedural:water_test",
+    "sensation_N2": "procedural:wind_test",
 }
 
 # Terms we want vectors for (labels + control signals). In this experiment:
@@ -55,6 +50,7 @@ GROUND_TRUTH: dict[str, str | None] = {
 # - label vectors come from GloVe only (no CLIP text path)
 VECTOR_TERMS = [
     "water",
+    "wind",
     "confirm",
     "need_label",
     "seen",
@@ -134,6 +130,38 @@ def _deterministic_random_unit_vector(dim: int, token: str) -> list[float]:
     return _unit_normalize(vec)
 
 
+def _cosine(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b) or not a:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _load_embedding_vectors(filename: str, wanted: set[str]) -> dict[str, list[float]]:
+    out: dict[str, list[float]] = {}
+    with open(filename, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            token, rest = line.split(" ", 1)
+            if token not in wanted:
+                continue
+            parts = rest.split()
+            try:
+                vec = [float(x) for x in parts]
+            except ValueError:
+                continue
+            out[token] = vec
+            if len(out) == len(wanted):
+                break
+    return out
+
+
 class Retina:
     def __init__(self):
         print("[Retina] Loading CLIP (ViT-B/32) image encoder...")
@@ -143,83 +171,83 @@ class Retina:
         os.makedirs(IMAGE_DIR, exist_ok=True)
 
     def fetch_images(self) -> dict[str, str]:
-        def _write_synthetic_image(token: str, path: str) -> None:
-            """Deterministic local fallback to avoid network fragility.
+        def _write_procedural_image(token: str, path: str) -> None:
+            """Deterministic local stimuli (no network) with class distinction.
 
-            We intentionally make W1 and W2 visually similar so that vector
-            similarity can plausibly transfer, while keeping N1 distinct.
+            - water: vertical gradients + smooth noise bands
+            - wind: diagonal streaks / sparse lines
+
+            W1 and W2 are similar-but-not-identical (same class).
+            N1 and N2 are similar-but-not-identical (same class).
             """
             try:
-                from PIL import Image  # type: ignore
+                from PIL import Image, ImageDraw  # type: ignore
             except ImportError:
                 print("[Error] Missing dependency 'Pillow'. Run: pip install -r requirements.txt")
                 sys.exit(1)
 
-            if token in ("sensation_W1", "sensation_W2"):
-                base = (20, 110, 210) if token == "sensation_W1" else (25, 120, 220)
-            else:
-                base = (170, 170, 170)
-
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            jitter_seed = int.from_bytes(digest[:2], "big", signed=False)
-
             w, h = 224, 224
-            img = Image.new("RGB", (w, h))
+            digest = hashlib.sha256(f"{RNG_SEED}:{token}".encode("utf-8")).digest()
+            seed = int.from_bytes(digest[:4], "big", signed=False)
+            rnd = random.Random(seed)
+
+            is_water = token in ("sensation_W1", "sensation_W2")
+            is_wind = token in ("sensation_N1", "sensation_N2")
+            if not (is_water or is_wind):
+                raise ValueError(f"Unknown stimulus token for procedural image: {token}")
+
+            img = Image.new("RGB", (w, h), (0, 0, 0))
             px = img.load()
-            for y in range(h):
-                for x in range(w):
-                    # Small deterministic texture to avoid perfectly-flat embeddings.
-                    j = (x * 31 + y * 17 + jitter_seed) % 23
-                    r = max(0, min(255, base[0] + (j - 11)))
-                    g = max(0, min(255, base[1] + ((j * 2) - 22)))
-                    b = max(0, min(255, base[2] + (11 - j)))
-                    px[x, y] = (r, g, b)
-            img.save(path, format="JPEG", quality=90)
 
-        try:
-            import requests  # type: ignore
-        except ImportError:
-            requests = None
+            if is_water:
+                # Blue vertical gradient + smooth sine bands (deterministic).
+                phase1 = rnd.random() * 2.0 * math.pi
+                phase2 = rnd.random() * 2.0 * math.pi
+                f1 = 2.0 + rnd.random() * 2.0
+                f2 = 5.0 + rnd.random() * 3.0
+                for y in range(h):
+                    gy = y / (h - 1)
+                    band = 0.35 * math.sin((gy * f1 * 2.0 * math.pi) + phase1) + 0.20 * math.sin((gy * f2 * 2.0 * math.pi) + phase2)
+                    for x in range(w):
+                        gx = x / (w - 1)
+                        ripple = 0.12 * math.sin(((gx * 6.0 + gy * 1.5) * 2.0 * math.pi) + phase2)
+                        v = max(0.0, min(1.0, gy * 0.65 + 0.20 + band + ripple))
+                        r = int(20 + 25 * v)
+                        g = int(90 + 110 * v)
+                        b = int(150 + 95 * v)
+                        px[x, y] = (r, g, b)
+            else:
+                # Dark background + bright deterministic diagonal streaks.
+                bg = (15, 18, 22)
+                for y in range(h):
+                    for x in range(w):
+                        px[x, y] = bg
 
-        if requests is not None:
-            print("[Retina] Gathering light from the web...")
-        else:
-            print("[Retina] No 'requests' available; using synthetic local stimuli")
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://upload.wikimedia.org/",
-        }
+                draw = ImageDraw.Draw(img)
+                # Draw multiple diagonal streaks; N1/N2 differ by seed.
+                line_count = 34
+                for _ in range(line_count):
+                    x0 = rnd.randint(-w, w)
+                    y0 = rnd.randint(0, h + h // 2)
+                    length = rnd.randint(w // 2, w * 2)
+                    dx = length
+                    dy = int(length * (0.55 + rnd.random() * 0.35))
+                    x1 = x0 + dx
+                    y1 = y0 - dy
+                    c = 220 + rnd.randint(-20, 20)
+                    color = (c, c, c)
+                    width = 1 if rnd.random() < 0.7 else 2
+                    draw.line((x0, y0, x1, y1), fill=color, width=width)
+
+            img.save(path, format="PNG")
+
+        print("[Retina] Using deterministic procedural stimuli (no network)")
         local_paths: dict[str, str] = {}
-        for token, url in VISUAL_STIMULI.items():
-            path = os.path.join(IMAGE_DIR, f"{token}.jpg")
+        for token in VISUAL_STIMULI.keys():
+            path = os.path.join(IMAGE_DIR, f"{token}.png")
             if not os.path.exists(path):
-                if requests is None:
-                    print(f"   Synthesizing {token}...")
-                    _write_synthetic_image(token, path)
-                else:
-                    print(f"   Downloading {token}...")
-                    try:
-                        last_exc: Exception | None = None
-                        for attempt in range(3):
-                            try:
-                                resp = requests.get(url, timeout=30, headers=headers)
-                                resp.raise_for_status()
-                                break
-                            except Exception as e:
-                                last_exc = e
-                                time.sleep(1.5 * (attempt + 1))
-                        if last_exc is not None and (
-                            "resp" not in locals() or not getattr(resp, "ok", False)
-                        ):
-                            raise last_exc
-                        with open(path, "wb") as f:
-                            f.write(resp.content)
-                    except Exception as e:
-                        # Network failures should not block reproducibility.
-                        print(f"   [Retina] Download failed for {token}; using synthetic fallback ({e})")
-                        _write_synthetic_image(token, path)
+                print(f"   Synthesizing {token}...")
+                _write_procedural_image(token, path)
             local_paths[token] = path
         return local_paths
 
@@ -256,19 +284,25 @@ class Retina:
         with open(filename, "w") as f:
             # 1) Image embeddings (opaque sensations)
             w1_vec: list[float] | None = None
+            n1_vec: list[float] | None = None
             for token, path in image_paths.items():
                 try:
-                    if ablate_bridge and token == "sensation_W2":
-                        # Ablation: make W2 explicitly orthogonal to W1 in embedding space.
-                        # This avoids corner-cases around zero-vectors/NaNs while reliably
-                        # breaking cosine-based similarity transfer.
-                        r = _deterministic_random_unit_vector(glove_dim, "ABLATE_W2")
+                    if ablate_bridge and token in ("sensation_W2", "sensation_N2"):
+                        # Ablation: replace TEST stimulus vectors with deterministic random
+                        # unit vectors (still hasUserVector=true because they are in-file).
+                        # We additionally remove any component along train vectors to
+                        # reliably drop cosine similarity.
+                        r = _deterministic_random_unit_vector(glove_dim, f"ABLATE_{token}")
+                        basis: list[list[float]] = []
                         if w1_vec is not None:
-                            dot = sum(a * b for a, b in zip(r, w1_vec))
-                            orth = [a - dot * b for a, b in zip(r, w1_vec)]
-                            vec = _unit_normalize(orth)
-                        else:
-                            vec = r
+                            basis.append(w1_vec)
+                        if n1_vec is not None:
+                            basis.append(n1_vec)
+                        v = r
+                        for b in basis:
+                            dot = sum(a * bb for a, bb in zip(v, b))
+                            v = [a - dot * bb for a, bb in zip(v, b)]
+                        vec = _unit_normalize(v)
                         vec_str = " ".join([f"{x:.6f}" for x in vec])
                         f.write(f"{token} {vec_str}\n")
                         continue
@@ -289,6 +323,8 @@ class Retina:
                     vec = v.tolist()
                     if token == "sensation_W1":
                         w1_vec = vec
+                    if token == "sensation_N1":
+                        n1_vec = vec
                     vec_str = " ".join([f"{x:.6f}" for x in vec])
                     f.write(f"{token} {vec_str}\n")
                 except Exception as e:
@@ -320,8 +356,8 @@ class Environment:
     def set_test_mode(self, enabled: bool) -> None:
         self.test_mode = enabled
 
-    def emit_confirm(self) -> None:
-        self.nars.input("<confirm --> [felt]>. :|:")
+    def emit_confirm(self, *, cycles: int = 20) -> None:
+        self.nars.input("<confirm --> [felt]>. :|:", cycles=cycles)
 
     def sound_event(self, content):
         # Hearing is always active (TRAIN and TEST), but never echoes
@@ -340,13 +376,26 @@ class Teacher:
         self.nars = nars
         self.env = env
 
-    def guide_hand(self, visual_signal: str, label: str, confirm: bool = True) -> None:
+    def guide_hand(
+        self,
+        visual_signal: str,
+        label: str,
+        *,
+        confirm: bool = True,
+        drive_need_label: bool = True,
+    ) -> None:
         print(f"\n[Teacher/TRAIN] Hand-under-hand: {visual_signal} -> force ^say({label})")
-        self.nars.input(f"<{visual_signal} --> [seen]>. :|:")
+        self.nars.input(f"<{visual_signal} --> [seen]>. :|:", cycles=20)
+        # Training-only: ground the symbol label to the sensation token.
+        self.nars.input(f"<{visual_signal} --> {label}>. :|:", cycles=20)
+        # Training-only: pair the label-free drive with the correct action so
+        # the TEST-time goal window can elicit a discriminative response.
+        if drive_need_label:
+            self.nars.input("<need_label --> [felt]>! :|:", cycles=20)
         # NOTE: This is training-only scaffolding, not a test-time prompt.
-        self.nars.input(f"<(*, {{SELF}}, {label}) --> ^say>! :|:")
+        self.nars.input(f"<(*, {{SELF}}, {label}) --> ^say>! :|:", cycles=20)
         if confirm:
-            self.env.emit_confirm()
+            self.env.emit_confirm(cycles=20)
 
 
 class NarsOrganism:
@@ -580,19 +629,99 @@ def _summarize_run(name: str, harness: ExperimentHarness) -> dict:
     }
 
 
+def _wait_for_quiescence(harness: ExperimentHarness, *, timeout_s: float, idle_s: float) -> None:
+    """Wait until no new utterances arrive for a short idle window."""
+    deadline = time.time() + timeout_s
+    last_n = len(harness.utterances)
+    last_change = time.time()
+    while time.time() < deadline:
+        n = len(harness.utterances)
+        if n != last_n:
+            last_n = n
+            last_change = time.time()
+        else:
+            if time.time() - last_change >= idle_s:
+                return
+        time.sleep(0.05)
+
+
+def _score_trial(
+    harness: ExperimentHarness,
+    *,
+    window_start_t: float,
+    window_end_t: float,
+    label_a: str,
+    label_b: str,
+) -> dict:
+    """Score utterances within the goal window.
+
+    Categories:
+      - said_<label_a>, said_<label_b>, other, none
+    """
+    uttered = [
+        u
+        for u in harness.utterances
+        if u["mode"] == "TEST" and window_start_t <= u["t"] <= window_end_t
+    ]
+    first_t = uttered[0]["t"] if uttered else None
+    time_to_first = (first_t - window_start_t) if first_t is not None else None
+
+    counts = Counter([(u.get("content") or "").strip().lower() for u in uttered])
+    a = int(counts.get(label_a.lower(), 0))
+    b = int(counts.get(label_b.lower(), 0))
+
+    category = "none"
+    if (a + b) == 0:
+        category = "none" if uttered == [] else "other"
+    else:
+        if a > b:
+            category = f"said_{label_a}"
+        elif b > a:
+            category = f"said_{label_b}"
+        else:
+            # Tie-break: whichever label appears first in the window.
+            first_label = None
+            for u in uttered:
+                c = (u.get("content") or "").strip().lower()
+                if c == label_a.lower():
+                    first_label = label_a
+                    break
+                if c == label_b.lower():
+                    first_label = label_b
+                    break
+            if first_label is None:
+                category = "other"
+            else:
+                category = f"said_{first_label}"
+
+    first_content = uttered[0]["content"].strip() if uttered else None
+
+    return {
+        "category": category,
+        "time_to_first_utterance": time_to_first,
+        "first_utterance": first_content,
+        "label_counts": {label_a: a, label_b: b},
+        "utterance_count": len(uttered),
+    }
+
+
 def _run_single_condition(
     name: str,
     *,
     jar_path: str,
     train: bool,
-    test_stimulus: str,
     ablate_bridge: bool,
     run_condition: str,
+    run_stamp: str,
     config: str | None,
     nal: str | None,
     shell_cycles: str | int | None,
-    train_trials: int = 8,
-    test_wait_s: float = 30.0,
+    train_trials: int = 10,
+    test_trials: int = 8,
+    settle_cycles: int = 200,
+    goal_cycles: int = 800,
+    settle_wait_s: float = 0.5,
+    goal_window_wait_s: float = 2.5,
 ) -> dict:
     embedding_file = (
         EMBEDDING_FILE.replace(".txt", "_ablate.txt") if ablate_bridge else EMBEDDING_FILE
@@ -615,37 +744,95 @@ def _run_single_condition(
     nars.attach_env(env)
     teacher = Teacher(nars, env)
 
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join("runs", f"{ts}_{run_condition}.jsonl")
+    log_path = os.path.join("runs", f"{run_stamp}_{run_condition}.jsonl")
     harness = ExperimentHarness(env, log_path=log_path)
     nars.on_say = harness.on_say
     nars.on_input = harness.on_input
 
     time.sleep(2.5)
     try:
-        # Training episode (hand-under-hand) on W1.
+        # Training: learn a discriminative mapping.
         harness.set_mode("TRAIN")
-        harness.set_stimulus("sensation_W1")
         if train:
-            print("\n--- TRAIN: WATER grounding (W1) ---")
+            print("\n--- TRAIN: discriminative grounding (W1->water, N1->wind) ---")
             for _ in range(train_trials):
-                nars.input("<sensation_W1 --> [seen]>. :|:", cycles=30)
+                harness.set_stimulus("sensation_W1")
                 teacher.guide_hand("sensation_W1", "water", confirm=True)
+                time.sleep(0.15)
+
+                harness.set_stimulus("sensation_N1")
+                teacher.guide_hand("sensation_N1", "wind", confirm=True)
                 time.sleep(0.3)
         else:
             print("\n--- TRAIN: skipped (baseline) ---")
 
-        # Test episode (label-free drive) on chosen stimulus.
+        # Cosine diagnostics (baseline/ablate) for audit.
+        vectors = _load_embedding_vectors(
+            embedding_file,
+            {"sensation_W1", "sensation_N1", "sensation_W2", "sensation_N2"},
+        )
+        w1 = vectors.get("sensation_W1") or []
+        n1 = vectors.get("sensation_N1") or []
+        w2 = vectors.get("sensation_W2") or []
+        n2 = vectors.get("sensation_N2") or []
+        cos_w2_w1 = _cosine(w2, w1)
+        cos_w2_n1 = _cosine(w2, n1)
+        cos_n2_n1 = _cosine(n2, n1)
+        cos_n2_w1 = _cosine(n2, w1)
+        print("\n--- COSINE DIAGNOSTICS (glove-space) ---")
+        print(f"cos(W2,W1)={cos_w2_w1:.4f}  cos(W2,N1)={cos_w2_n1:.4f}")
+        print(f"cos(N2,N1)={cos_n2_n1:.4f}  cos(N2,W1)={cos_n2_w1:.4f}")
+
+        # Test: bounded per-trial evaluation window.
         harness.set_mode("TEST")
-        harness.set_stimulus(test_stimulus)
-        harness.test_started_at = time.time()
+        confusion = {
+            "W2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
+            "N2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
+        }
+        trial_rows: list[dict] = []
+        test_cases = [
+            ("W2", "sensation_W2"),
+            ("N2", "sensation_N2"),
+        ]
+        for case_name, stimulus in test_cases:
+            print(f"\n--- TEST CASE: {case_name} stimulus={stimulus} ---")
+            for i in range(test_trials):
+                harness.set_stimulus(stimulus)
 
-        print(f"\n--- TEST: stimulus={test_stimulus}, label-free drive ---")
-        nars.input(f"<{test_stimulus} --> [seen]>. :|:", cycles=50)
-        # Give the engine enough cycles to respond without manual stdin driving.
-        nars.input("<need_label --> [felt]>! :|:", cycles=2000)
+                # Present stimulus + settle.
+                nars.input(f"<{stimulus} --> [seen]>. :|:", cycles=settle_cycles)
+                time.sleep(settle_wait_s)
+                _wait_for_quiescence(harness, timeout_s=2.0, idle_s=0.35)
 
-        time.sleep(test_wait_s)
+                # Goal window (label-free drive).
+                window_start = time.time()
+                nars.input("<need_label --> [felt]>! :|:", cycles=goal_cycles)
+                # Re-present perception inside the scoring window (still label-free).
+                nars.input(f"<{stimulus} --> [seen]>. :|:", cycles=20)
+                # Give outputs time to arrive before closing the window.
+                time.sleep(goal_window_wait_s)
+                _wait_for_quiescence(harness, timeout_s=3.0, idle_s=0.45)
+                window_end = time.time()
+
+                score = _score_trial(
+                    harness,
+                    window_start_t=window_start,
+                    window_end_t=window_end,
+                    label_a="water",
+                    label_b="wind",
+                )
+                confusion_key = score["category"]
+                if confusion_key not in ("said_water", "said_wind", "other", "none"):
+                    confusion_key = "other"
+                confusion[case_name][confusion_key] += 1
+                trial_rows.append(
+                    {
+                        "case": case_name,
+                        "trial": i,
+                        "stimulus": stimulus,
+                        **score,
+                    }
+                )
 
         # Demonstration/audit aid: print every TEST input as recorded in JSONL.
         # This must not contain the label token.
@@ -664,8 +851,20 @@ def _run_single_condition(
 
         # Hard acceptance check: no label token injected during TEST.
         harness.assert_no_label_leakage_in_test("water")
+        harness.assert_no_label_leakage_in_test("wind")
         harness.assert_no_confirm_injection_in_test()
-        return _summarize_run(name, harness)
+        # Return a richer audit summary.
+        return {
+            "name": name,
+            "confusion": confusion,
+            "trials": trial_rows,
+            "cosines": {
+                "cos_W2_W1": cos_w2_w1,
+                "cos_W2_N1": cos_w2_n1,
+                "cos_N2_N1": cos_n2_n1,
+                "cos_N2_W1": cos_n2_w1,
+            },
+        }
     finally:
         try:
             harness.close()
@@ -686,14 +885,12 @@ def _ensure_jar_or_build(jar_path: str) -> None:
         raise RuntimeError(f"Jar still missing after build: {jar_path}")
 
 
-def _write_summary(run_condition: str, summary: dict) -> str:
+def _write_summary(run_condition: str, summary: dict, *, run_stamp: str) -> str:
     os.makedirs("runs", exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = os.path.join("runs", f"{ts}_{run_condition}.summary.json")
+    path = os.path.join("runs", f"{run_stamp}_{run_condition}.summary.json")
     payload = dict(summary)
     payload["run_condition"] = run_condition
     payload["t"] = time.time()
-    payload["dist"] = dict(payload.get("dist", {}))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return path
@@ -719,20 +916,15 @@ def _find_latest_summary(run_condition: str) -> tuple[str, dict] | None:
 
 
 def _print_side_by_side(a_name: str, a: dict, b_name: str, b: dict) -> None:
-    def _water_count(d: dict) -> int:
-        dist = d.get("dist") or {}
-        try:
-            return int(dist.get("water", 0))
-        except Exception:
-            return 0
-
     print("\n=== BASELINE vs ABLATE_BRIDGE ===")
-    print(
-        f"{a_name}: water_utterances={_water_count(a)}, time_to_first_utterance={a.get('time_to_first')}"
-    )
-    print(
-        f"{b_name}: water_utterances={_water_count(b)}, time_to_first_utterance={b.get('time_to_first')}"
-    )
+    for name, d in ((a_name, a), (b_name, b)):
+        confusion = d.get("confusion") or {}
+        cosines = d.get("cosines") or {}
+        print(f"{name}: confusion={confusion}")
+        if cosines:
+            print(
+                f"{name}: cos(W2,W1)={cosines.get('cos_W2_W1')}, cos(W2,N1)={cosines.get('cos_W2_N1')}, cos(N2,N1)={cosines.get('cos_N2_N1')}, cos(N2,W1)={cosines.get('cos_N2_W1')}"
+            )
 
 
 def run_single_water_protocol(
@@ -746,23 +938,25 @@ def run_single_water_protocol(
 ) -> None:
     _ensure_jar_or_build(jar_path)
 
+    run_stamp = time.strftime("%Y%m%d_%H%M%S")
+
     print("\n==============================")
     print("Project Broca: WATER transfer")
     print("==============================")
     print(f"condition={run_condition} ablate_bridge={ablate_bridge}")
 
     summary = _run_single_condition(
-        "train(W1)->test(W2)",
+        "train(W1,N1)->test(W2,N2)",
         jar_path=jar_path,
         train=True,
-        test_stimulus="sensation_W2",
         ablate_bridge=ablate_bridge,
         run_condition=run_condition,
+        run_stamp=run_stamp,
         config=config,
         nal=nal,
         shell_cycles=shell_cycles,
     )
-    summary_path = _write_summary(run_condition, summary)
+    summary_path = _write_summary(run_condition, summary, run_stamp=run_stamp)
     print(f"[Runner] Summary saved: {summary_path}")
     print(f"[Runner] JSONL logs saved under: runs/*_{run_condition}.jsonl")
 
@@ -817,12 +1011,12 @@ def run_water_protocol(ablate_bridge: bool = False) -> None:
     # A) Train → Test (main condition)
     results.append(
         _run_single_condition(
-            "A) train(W1)->test(W2)",
+            "A) train(W1,N1)->test(W2,N2)",
             jar_path=NARS_JAR,
             train=True,
-            test_stimulus="sensation_W2",
             ablate_bridge=ablate_bridge,
             run_condition=f"legacy_{ts}_A",
+            run_stamp=ts,
             config=None,
             nal=None,
             shell_cycles=None,
@@ -832,42 +1026,28 @@ def run_water_protocol(ablate_bridge: bool = False) -> None:
     # B) No-training baseline
     results.append(
         _run_single_condition(
-            "B) no-train->test(W2)",
+            "B) no-train->test(W2,N2)",
             jar_path=NARS_JAR,
             train=False,
-            test_stimulus="sensation_W2",
             ablate_bridge=ablate_bridge,
             run_condition=f"legacy_{ts}_B",
+            run_stamp=ts,
             config=None,
             nal=None,
             shell_cycles=None,
         )
     )
 
-    # C) Distractor baseline (after training)
-    results.append(
-        _run_single_condition(
-            "C) train(W1)->test(N1)",
-            jar_path=NARS_JAR,
-            train=True,
-            test_stimulus="sensation_N1",
-            ablate_bridge=ablate_bridge,
-            run_condition=f"legacy_{ts}_C",
-            config=None,
-            nal=None,
-            shell_cycles=None,
-        )
-    )
-
-    print("\n=== SUMMARY (TEST utterance counts) ===")
+    print("\n=== SUMMARY (CONFUSION MATRICES) ===")
     for r in results:
-        water_count = int(r["dist"].get("water", 0))
-        print(f"{r['name']}: water_utterances={water_count}, time_to_first_utterance={r.get('time_to_first')}")
+        print(f"{r['name']}: confusion={r.get('confusion')}")
 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Keller-style WATER grounding + transfer demo")
+    parser = argparse.ArgumentParser(
+        description="Project Broca: audit-safe 2-label (water vs wind) grounding + transfer demo"
+    )
     parser.add_argument(
         "--run",
         choices=["baseline", "ablate_bridge"],

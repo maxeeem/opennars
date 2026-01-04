@@ -155,6 +155,10 @@ Build the jar:
 
     mvn -Dmaven.javadoc.skip=true package
 
+Sanity-check the Python harness:
+
+    python -m py_compile broca.py
+
 Run baseline vs bridge-ablation (writes JSONL audit logs under `runs/`):
 
     python broca.py --run baseline
@@ -170,7 +174,8 @@ What success looks like:
 
 - The JSONL file contains *all* inputs sent into NARS and *all* parsed `^say` utterances.
 - During TEST, the inputs contain **no** `<confirm --> [felt]>` events and **no** literal label tokens (e.g., `water`).
-- Baseline typically shows a higher TEST `water` utterance count (or earlier first `water` utterance) than `ablate_bridge`.
+- Each summary includes an audit-friendly confusion matrix for TEST(W2) and TEST(N2), plus cosine diagnostics confirming ablation destroyed similarity.
+- Baseline should classify correctly more often than `ablate_bridge`.
 
 Example Files
 -------------
