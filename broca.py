@@ -10,8 +10,7 @@ import random
 import argparse
 from collections import Counter
 import hashlib
-import requests
-from PIL import Image
+import json
 
 try:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -144,6 +143,12 @@ class Retina:
         os.makedirs(IMAGE_DIR, exist_ok=True)
 
     def fetch_images(self) -> dict[str, str]:
+        try:
+            import requests  # type: ignore
+        except ImportError:
+            print("[Error] Missing dependency 'requests'. Run: pip install -r requirements.txt")
+            sys.exit(1)
+
         print("[Retina] Gathering light from the web...")
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -176,6 +181,12 @@ class Retina:
         return local_paths
 
     def generate_embedding_file(self, filename: str, ablate_bridge: bool = False) -> None:
+        try:
+            from PIL import Image  # type: ignore
+        except ImportError:
+            print("[Error] Missing dependency 'Pillow'. Run: pip install -r requirements.txt")
+            sys.exit(1)
+
         """Generate a mixed embedding file:
         - sensation_* vectors from CLIP image features (projected down to GloVe dimensionality)
         - word/control vectors from GloVe if present, otherwise deterministic random
@@ -259,11 +270,13 @@ class Environment:
         self.nars.input("<confirm --> [felt]>. :|:")
 
     def sound_event(self, content):
-        # Training: allow speech to be echoed into hearing.
-        # Test: strictly disable echo to avoid label leakage.
-        if self.test_mode:
-            return
-        self.nars.input(f"<{content} --> [heard]>. :|:")
+        # Hearing is always active (TRAIN and TEST), but never echoes
+        # the semantic content token. Instead, it emits an opaque,
+        # deterministic auditory token suitable for auditing.
+        content = (content or "").strip()
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+        auditory_token = f"utterance_{digest}"
+        self.nars.input(f"<{auditory_token} --> [heard]>. :|:")
 
 
 class Teacher:
@@ -283,10 +296,23 @@ class Teacher:
 
 
 class NarsOrganism:
-    def __init__(self, jar_path, embedding_file):
+    def __init__(
+        self,
+        jar_path: str,
+        embedding_file: str,
+        *,
+        config: str | None = None,
+        run_id: str | None = None,
+        nal: str | None = None,
+        cycles: str | int | None = None,
+    ):
         self.process = None
         self.jar_path = jar_path
         self.embedding_file = embedding_file
+        self.config = config
+        self.run_id = run_id
+        self.nal = nal
+        self.cycles = cycles
         self.listening = True
         self.env = None  # Will attach later
         self.on_say = None
@@ -297,7 +323,27 @@ class NarsOrganism:
             print("[Error] JAR not found.")
             return False
 
-        cmd = ["java", "-Dopennars.vector=true", "-jar", self.jar_path, "--glove", self.embedding_file]
+        # The jar's Main-Class is org.opennars.main.Shell which expects
+        # 4 positional args:
+        #   narOrConfigFileOrNull idOrNull nalFileOrNull cyclesToRunOrNull
+        # Always pass them explicitly to avoid interactive-mode ambiguity.
+        arg_config = self.config if self.config is not None else "null"
+        arg_id = self.run_id if self.run_id is not None else "null"
+        arg_nal = self.nal if self.nal is not None else "null"
+        arg_cycles = str(self.cycles) if self.cycles is not None else "null"
+
+        cmd = [
+            "java",
+            "-Dopennars.vector=true",
+            "-jar",
+            self.jar_path,
+            arg_config,
+            arg_id,
+            arg_nal,
+            arg_cycles,
+            "--glove",
+            self.embedding_file,
+        ]
         print(f"[NarsOrganism] Opening eyes... ({' '.join(cmd)})")
 
         self.process = subprocess.Popen(
@@ -380,14 +426,30 @@ class NarsOrganism:
 
 
 class ExperimentHarness:
-    def __init__(self, env: Environment):
+    def __init__(self, env: Environment, *, log_path: str):
         self.env = env
         self.mode = "TRAIN"
         self.current_stimulus: str | None = None
         self.test_started_at: float | None = None
-        self.confirmed_at: float | None = None
         self.utterances: list[dict] = []
         self.inputs: list[dict] = []
+        self.log_path = log_path
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        self._log_f = open(log_path, "a", encoding="utf-8")
+        self._jsonl({"kind": "meta", "t": time.time(), "log_path": log_path})
+
+    def close(self) -> None:
+        try:
+            self._log_f.close()
+        except Exception:
+            pass
+
+    def _jsonl(self, obj: dict) -> None:
+        try:
+            self._log_f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            self._log_f.flush()
+        except Exception:
+            pass
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
@@ -397,47 +459,52 @@ class ExperimentHarness:
         self.current_stimulus = stim
 
     def on_input(self, text: str) -> None:
-        self.inputs.append(
-            {
-                "t": time.time(),
-                "mode": self.mode,
-                "stimulus": self.current_stimulus,
-                "text": text,
-            }
-        )
+        evt = {
+            "kind": "input",
+            "t": time.time(),
+            "mode": self.mode,
+            "stimulus": self.current_stimulus,
+            "text": text,
+        }
+        self.inputs.append(evt)
+        self._jsonl(evt)
 
     def on_say(self, content: str) -> None:
         now = time.time()
         print(f"[UTTERANCE] mode={self.mode} stimulus={self.current_stimulus} say={content}")
-        self.utterances.append(
-            {
-                "t": now,
-                "mode": self.mode,
-                "stimulus": self.current_stimulus,
-                "content": content,
-            }
-        )
-
-        if self.mode != "TEST":
-            return
-        if self.confirmed_at is not None:
-            return
-        if self.current_stimulus is None:
-            return
-
-        expected = GROUND_TRUTH.get(self.current_stimulus)
-        if expected is not None and content.strip() == expected:
-            self.env.emit_confirm()
-            self.confirmed_at = time.time()
-            print(
-                f"[CONFIRM] mode=TEST stimulus={self.current_stimulus} expected={expected}"
-            )
+        evt = {
+            "kind": "utterance",
+            "t": now,
+            "mode": self.mode,
+            "stimulus": self.current_stimulus,
+            "content": content,
+        }
+        self.utterances.append(evt)
+        self._jsonl(evt)
 
     def assert_no_label_leakage_in_test(self, label: str) -> None:
-        bad = [e for e in self.inputs if e["mode"] == "TEST" and label in e["text"]]
+        needle = label.lower()
+        bad = [
+            e
+            for e in self.inputs
+            if e["mode"] == "TEST" and needle in (e.get("text") or "").lower()
+        ]
         if bad:
             example = bad[0]["text"]
             raise RuntimeError(f"TEST leakage: saw '{label}' injected into NARS input: {example}")
+
+    def assert_no_confirm_injection_in_test(self) -> None:
+        bad = [
+            e
+            for e in self.inputs
+            if e["mode"] == "TEST" and "<confirm --> [felt]>" in (e.get("text") or "")
+        ]
+        if bad:
+            example = bad[0]["text"]
+            raise RuntimeError(
+                "TEST reward injection: saw '<confirm --> [felt]>' injected into NARS input: "
+                + example
+            )
 
 
 def _summarize_run(name: str, harness: ExperimentHarness) -> dict:
@@ -446,30 +513,30 @@ def _summarize_run(name: str, harness: ExperimentHarness) -> dict:
     first_utt_t = uttered[0]["t"] if uttered else None
     t0 = harness.test_started_at
     time_to_first = (first_utt_t - t0) if (first_utt_t is not None and t0 is not None) else None
-    time_to_confirm = (harness.confirmed_at - t0) if (harness.confirmed_at is not None and t0 is not None) else None
 
     print(f"\n=== {name} ===")
     print(f"mode: TEST stimulus: {harness.current_stimulus}")
     print(f"utterance distribution: {dict(dist)}")
-    print(f"confirmed: {harness.confirmed_at is not None}")
     print(f"time_to_first_utterance: {time_to_first}")
-    print(f"time_to_confirm: {time_to_confirm}")
 
     return {
         "name": name,
         "dist": dist,
-        "confirmed": harness.confirmed_at is not None,
         "time_to_first": time_to_first,
-        "time_to_confirm": time_to_confirm,
     }
 
 
 def _run_single_condition(
     name: str,
     *,
+    jar_path: str,
     train: bool,
     test_stimulus: str,
     ablate_bridge: bool,
+    run_condition: str,
+    config: str | None,
+    nal: str | None,
+    shell_cycles: str | int | None,
     train_trials: int = 8,
     test_wait_s: float = 8.0,
 ) -> dict:
@@ -480,7 +547,13 @@ def _run_single_condition(
     if not _embedding_file_has_all_vocab(embedding_file, required_vocab):
         Retina().generate_embedding_file(embedding_file, ablate_bridge=ablate_bridge)
 
-    nars = NarsOrganism(NARS_JAR, embedding_file)
+    nars = NarsOrganism(
+        jar_path,
+        embedding_file,
+        config=config,
+        nal=nal,
+        cycles=shell_cycles,
+    )
     if not nars.start():
         raise RuntimeError("Could not start NARS")
 
@@ -488,7 +561,9 @@ def _run_single_condition(
     nars.attach_env(env)
     teacher = Teacher(nars, env)
 
-    harness = ExperimentHarness(env)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join("runs", f"{ts}_{run_condition}.jsonl")
+    harness = ExperimentHarness(env, log_path=log_path)
     nars.on_say = harness.on_say
     nars.on_input = harness.on_input
 
@@ -519,9 +594,141 @@ def _run_single_condition(
 
         # Hard acceptance check: no label token injected during TEST.
         harness.assert_no_label_leakage_in_test("water")
+        harness.assert_no_confirm_injection_in_test()
         return _summarize_run(name, harness)
     finally:
+        try:
+            harness.close()
+        except Exception:
+            pass
         nars.kill()
+
+
+def _ensure_jar_or_build(jar_path: str) -> None:
+    if os.path.exists(jar_path):
+        return
+    print(f"[Runner] Jar missing at {jar_path}. Building with Maven...")
+    subprocess.run(
+        ["mvn", "-Dmaven.javadoc.skip=true", "package"],
+        check=True,
+    )
+    if not os.path.exists(jar_path):
+        raise RuntimeError(f"Jar still missing after build: {jar_path}")
+
+
+def _write_summary(run_condition: str, summary: dict) -> str:
+    os.makedirs("runs", exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join("runs", f"{ts}_{run_condition}.summary.json")
+    payload = dict(summary)
+    payload["run_condition"] = run_condition
+    payload["t"] = time.time()
+    payload["dist"] = dict(payload.get("dist", {}))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def _find_latest_summary(run_condition: str) -> tuple[str, dict] | None:
+    if not os.path.isdir("runs"):
+        return None
+    candidates = [
+        os.path.join("runs", fn)
+        for fn in os.listdir("runs")
+        if fn.endswith(f"_{run_condition}.summary.json")
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    path = candidates[0]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return path, json.load(f)
+    except Exception:
+        return None
+
+
+def _print_side_by_side(a_name: str, a: dict, b_name: str, b: dict) -> None:
+    def _water_count(d: dict) -> int:
+        dist = d.get("dist") or {}
+        try:
+            return int(dist.get("water", 0))
+        except Exception:
+            return 0
+
+    print("\n=== BASELINE vs ABLATE_BRIDGE ===")
+    print(
+        f"{a_name}: water_utterances={_water_count(a)}, time_to_first_utterance={a.get('time_to_first')}"
+    )
+    print(
+        f"{b_name}: water_utterances={_water_count(b)}, time_to_first_utterance={b.get('time_to_first')}"
+    )
+
+
+def run_single_water_protocol(
+    *,
+    run_condition: str,
+    jar_path: str,
+    ablate_bridge: bool,
+    config: str | None,
+    nal: str | None,
+    shell_cycles: str | int | None,
+) -> None:
+    _ensure_jar_or_build(jar_path)
+
+    print("\n==============================")
+    print("Project Broca: WATER transfer")
+    print("==============================")
+    print(f"condition={run_condition} ablate_bridge={ablate_bridge}")
+
+    summary = _run_single_condition(
+        "train(W1)->test(W2)",
+        jar_path=jar_path,
+        train=True,
+        test_stimulus="sensation_W2",
+        ablate_bridge=ablate_bridge,
+        run_condition=run_condition,
+        config=config,
+        nal=nal,
+        shell_cycles=shell_cycles,
+    )
+    summary_path = _write_summary(run_condition, summary)
+    print(f"[Runner] Summary saved: {summary_path}")
+    print(f"[Runner] JSONL logs saved under: runs/*_{run_condition}.jsonl")
+
+    # If the other condition has been run previously, print + save a comparison.
+    other = "ablate_bridge" if run_condition == "baseline" else "baseline"
+    other_loaded = _find_latest_summary(other)
+    if other_loaded is None:
+        return
+
+    other_path, other_summary = other_loaded
+    this_loaded = _find_latest_summary(run_condition)
+    if this_loaded is None:
+        return
+    this_path, this_summary = this_loaded
+
+    if run_condition == "baseline":
+        _print_side_by_side("baseline", this_summary, "ablate_bridge", other_summary)
+    else:
+        _print_side_by_side("baseline", other_summary, "ablate_bridge", this_summary)
+
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    compare_path = os.path.join("runs", f"{ts}_compare_baseline_vs_ablate_bridge.json")
+    with open(compare_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "t": time.time(),
+                "baseline": other_summary if run_condition != "baseline" else this_summary,
+                "ablate_bridge": this_summary if run_condition != "baseline" else other_summary,
+                "baseline_summary_path": other_path if run_condition != "baseline" else this_path,
+                "ablate_bridge_summary_path": this_path if run_condition != "baseline" else other_path,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    print(f"[Runner] Comparison saved: {compare_path}")
 
 
 def run_water_protocol(ablate_bridge: bool = False) -> None:
@@ -574,9 +781,46 @@ def run_water_protocol(ablate_bridge: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Keller-style WATER grounding + transfer demo")
     parser.add_argument(
+        "--run",
+        choices=["baseline", "ablate_bridge"],
+        help="Operational runner entrypoint (audit-safe).",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional NARS config XML for Shell positional arg #1 (default: null).",
+    )
+    parser.add_argument(
+        "--nal",
+        default=None,
+        help="Optional NAL file for Shell positional arg #3 (default: null).",
+    )
+    parser.add_argument(
+        "--cycles",
+        default=None,
+        help="Optional cyclesToRunOrNull for Shell positional arg #4 (default: null).",
+    )
+    parser.add_argument(
+        "--jar",
+        default=NARS_JAR,
+        help=f"Path to OpenNARS jar (default: {NARS_JAR}).",
+    )
+    # Back-compat: keep old flag for interactive experimentation.
+    parser.add_argument(
         "--ablate-bridge",
         action="store_true",
-        help="Disable perceptual similarity bridge by replacing W2 vector with an unrelated vector.",
+        help="(Legacy) Disable bridge in the older multi-condition demo.",
     )
+
     args = parser.parse_args()
-    run_water_protocol(ablate_bridge=bool(args.ablate_bridge))
+    if args.run is not None:
+        run_single_water_protocol(
+            run_condition=args.run,
+            jar_path=args.jar,
+            ablate_bridge=(args.run == "ablate_bridge"),
+            config=args.config,
+            nal=args.nal,
+            shell_cycles=args.cycles,
+        )
+    else:
+        run_water_protocol(ablate_bridge=bool(args.ablate_bridge))

@@ -99,6 +99,30 @@ If you run only:
 
 ---
 
+## Project Broca (Audit-Safe Evaluation Runner)
+
+This repo includes an evaluation harness in `broca.py` that runs OpenNARS non-interactively and writes JSONL audit logs so the “zero-shot transfer” story cannot be explained by harness leakage.
+
+### Commands
+
+Build the jar:
+
+`mvn -Dmaven.javadoc.skip=true package`
+
+Run the baseline condition:
+
+`python broca.py --run baseline`
+
+Run the bridge-ablation condition:
+
+`python broca.py --run ablate_bridge`
+
+### Artifacts
+
+- JSONL audit logs: `runs/<timestamp>_<condition>.jsonl`
+- Per-run summaries: `runs/<timestamp>_<condition>.summary.json`
+- When both conditions have been run at least once, a comparison is also saved: `runs/<timestamp>_compare_baseline_vs_ablate_bridge.json`
+
 ## Running NAL Test Suites (Single-step / Multi-step)
 
 The NAL regression suites are run via JUnit (`org.opennars.core.NALTest`). You can select which suite runs by setting `-Dnal.directories=...`.

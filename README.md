@@ -148,6 +148,24 @@ Run Requirements
 ----------------
  * Java 8+ (OpenJDK 10 recommended)
 
+Project Broca (Audit-Safe Evaluation)
+------------------------------------
+
+Build the jar:
+
+    mvn -Dmaven.javadoc.skip=true package
+
+Run baseline vs bridge-ablation (writes JSONL audit logs under `runs/`):
+
+    python broca.py --run baseline
+    python broca.py --run ablate_bridge
+
+Artifacts:
+
+    runs/<timestamp>_<condition>.jsonl
+    runs/<timestamp>_<condition>.summary.json
+    runs/<timestamp>_compare_baseline_vs_ablate_bridge.json
+
 Example Files
 -------------
 For an overview of reasoning features, see working examples (tests) in the nal folder, also explained in [SingleStepTestingCases](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/single_step) and [MultiStepExamples](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/multi_step).
