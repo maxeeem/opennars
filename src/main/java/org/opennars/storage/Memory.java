@@ -50,6 +50,7 @@ import org.opennars.main.Nar;
 import org.opennars.main.Parameters;
 import org.opennars.operator.Operation;
 import org.opennars.operator.Operator;
+import org.opennars.operator.mental.Say;
 import org.opennars.plugin.mental.Emotions;
 import org.opennars.main.Debug;
 
@@ -132,6 +133,7 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
         this.recent_operations = recent_operations;
         this.seq_current = seq_current;
         this.operators = new LinkedHashMap<>();
+        addOperator(new Say());
         reset();
     }
     
