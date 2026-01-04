@@ -166,6 +166,12 @@ Artifacts:
     runs/<timestamp>_<condition>.summary.json
     runs/<timestamp>_compare_baseline_vs_ablate_bridge.json
 
+What success looks like:
+
+- The JSONL file contains *all* inputs sent into NARS and *all* parsed `^say` utterances.
+- During TEST, the inputs contain **no** `<confirm --> [felt]>` events and **no** literal label tokens (e.g., `water`).
+- Baseline typically shows a higher TEST `water` utterance count (or earlier first `water` utterance) than `ablate_bridge`.
+
 Example Files
 -------------
 For an overview of reasoning features, see working examples (tests) in the nal folder, also explained in [SingleStepTestingCases](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/single_step) and [MultiStepExamples](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/multi_step).
