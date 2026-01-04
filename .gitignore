@@ -80,3 +80,10 @@ __pycache__/
 /retina_cache/
 /clip_embeddings.txt
 /clip_embeddings.txt.bin
+
+# Broca runner artifacts (generated)
+/runs/
+/water_embeddings*.txt
+/water_embeddings*.txt.bin
+/*_ablate.txt
+/*_ablate.txt.bin
