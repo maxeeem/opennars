@@ -217,27 +217,30 @@ class Retina:
                         b = int(150 + 95 * v)
                         px[x, y] = (r, g, b)
             else:
-                # Dark background + bright deterministic diagonal streaks.
-                bg = (15, 18, 22)
+                # Wind: Fire-like pattern (Red/Orange/Yellow) - High contrast to Water (Blue).
                 for y in range(h):
                     for x in range(w):
-                        px[x, y] = bg
-
+                        # Vertical gradient from Yellow (top) to Red (bottom)
+                        gy = y / h
+                        r = 255
+                        g = int(200 * (1.0 - gy))
+                        b = 0
+                        # Add some noise
+                        noise = rnd.randint(-30, 30)
+                        r = max(0, min(255, r + noise))
+                        g = max(0, min(255, g + noise))
+                        b = max(0, min(255, b + noise))
+                        px[x, y] = (r, g, b)
+                
+                # Add some "flames"
                 draw = ImageDraw.Draw(img)
-                # Draw multiple diagonal streaks; N1/N2 differ by seed.
-                line_count = 34
-                for _ in range(line_count):
-                    x0 = rnd.randint(-w, w)
-                    y0 = rnd.randint(0, h + h // 2)
-                    length = rnd.randint(w // 2, w * 2)
-                    dx = length
-                    dy = int(length * (0.55 + rnd.random() * 0.35))
-                    x1 = x0 + dx
-                    y1 = y0 - dy
-                    c = 220 + rnd.randint(-20, 20)
-                    color = (c, c, c)
-                    width = 1 if rnd.random() < 0.7 else 2
-                    draw.line((x0, y0, x1, y1), fill=color, width=width)
+                count = 15
+                for _ in range(count):
+                    x = rnd.randint(0, w)
+                    y = h
+                    h_flame = rnd.randint(50, 150)
+                    w_flame = rnd.randint(10, 40)
+                    draw.polygon([(x, y), (x - w_flame, y - h_flame), (x + w_flame, y - h_flame)], fill=(255, 50, 0))
 
             img.save(path, format="PNG")
 
@@ -283,52 +286,72 @@ class Retina:
         required_vocab = list(VISUAL_STIMULI.keys()) + VECTOR_TERMS
         with open(filename, "w") as f:
             # 1) Image embeddings (opaque sensations)
-            w1_vec: list[float] | None = None
-            n1_vec: list[float] | None = None
+            # First pass: compute CLIP vectors for all non-ablated images
+            clip_vectors: dict[str, torch.Tensor] = {}
+            
             for token, path in image_paths.items():
+                if ablate_bridge and token in ("sensation_W2", "sensation_N2"):
+                    continue # Handled separately
+                
                 try:
-                    if ablate_bridge and token in ("sensation_W2", "sensation_N2"):
-                        # Ablation: replace TEST stimulus vectors with deterministic random
-                        # unit vectors (still hasUserVector=true because they are in-file).
-                        # We additionally remove any component along train vectors to
-                        # reliably drop cosine similarity.
-                        r = _deterministic_random_unit_vector(glove_dim, f"ABLATE_{token}")
-                        basis: list[list[float]] = []
-                        if w1_vec is not None:
-                            basis.append(w1_vec)
-                        if n1_vec is not None:
-                            basis.append(n1_vec)
-                        v = r
-                        for b in basis:
-                            dot = sum(a * bb for a, bb in zip(v, b))
-                            v = [a - dot * bb for a, bb in zip(v, b)]
-                        vec = _unit_normalize(v)
-                        vec_str = " ".join([f"{x:.6f}" for x in vec])
-                        f.write(f"{token} {vec_str}\n")
-                        continue
-
                     image = Image.open(path).convert("RGB")
                     inputs = self.processor(images=image, return_tensors="pt")
                     with torch.no_grad():
                         outputs = self.model.get_image_features(**inputs)
                         outputs = outputs / outputs.norm(p=2, dim=-1, keepdim=True)
-
+                    
                     v512 = outputs[0].to(torch.float32)
                     if v512.numel() != proj_in_dim:
                         raise RuntimeError(f"Unexpected CLIP dim for {token}: {v512.numel()}")
-
-                    v = torch.matmul(proj, v512)
-                    v = v / v.norm(p=2)
-
-                    vec = v.tolist()
-                    if token == "sensation_W1":
-                        w1_vec = vec
-                    if token == "sensation_N1":
-                        n1_vec = vec
-                    vec_str = " ".join([f"{x:.6f}" for x in vec])
-                    f.write(f"{token} {vec_str}\n")
+                    clip_vectors[token] = v512
                 except Exception as e:
                     raise RuntimeError(f"Blind spot for {token} ({path}): {e}")
+
+            # Center the CLIP vectors to maximize contrast
+            if clip_vectors:
+                all_v = torch.stack(list(clip_vectors.values()))
+                mean_v = torch.mean(all_v, dim=0)
+                for t in clip_vectors:
+                    clip_vectors[t] = clip_vectors[t] - mean_v
+
+            # Second pass: Project and write (handling ablation)
+            w1_vec: list[float] | None = None
+            n1_vec: list[float] | None = None
+
+            for token in image_paths: # Preserve order
+                if ablate_bridge and token in ("sensation_W2", "sensation_N2"):
+                    # Ablation: replace TEST stimulus vectors with deterministic random
+                    # unit vectors (still hasUserVector=true because they are in-file).
+                    # We additionally remove any component along train vectors to
+                    # reliably drop cosine similarity.
+                    r = _deterministic_random_unit_vector(glove_dim, f"ABLATE_{token}")
+                    basis: list[list[float]] = []
+                    if w1_vec is not None:
+                        basis.append(w1_vec)
+                    if n1_vec is not None:
+                        basis.append(n1_vec)
+                    v_ablate = r
+                    for b in basis:
+                        dot = sum(a * bb for a, bb in zip(v_ablate, b))
+                        v_ablate = [a - dot * bb for a, bb in zip(v_ablate, b)]
+                    vec = _unit_normalize(v_ablate)
+                    vec_str = " ".join([f"{x:.6f}" for x in vec])
+                    f.write(f"{token} {vec_str}\n")
+                    continue
+                
+                # Normal projection
+                v512 = clip_vectors[token]
+                v = torch.matmul(proj, v512)
+                v = v / v.norm(p=2)
+                vec = v.tolist()
+                
+                if token == "sensation_W1":
+                    w1_vec = vec
+                if token == "sensation_N1":
+                    n1_vec = vec
+                
+                vec_str = " ".join([f"{x:.6f}" for x in vec])
+                f.write(f"{token} {vec_str}\n")
 
             # 2) Word/control embeddings (GloVe if available; otherwise deterministic random)
             for term in VECTOR_TERMS:
@@ -671,28 +694,17 @@ def _score_trial(
     b = int(counts.get(label_b.lower(), 0))
 
     category = "none"
-    if (a + b) == 0:
-        category = "none" if uttered == [] else "other"
+    if not uttered:
+        category = "none"
     else:
-        if a > b:
+        # First utterance determines the label (single-response policy).
+        first_c = uttered[0]["content"].strip().lower()
+        if first_c == label_a.lower():
             category = f"said_{label_a}"
-        elif b > a:
+        elif first_c == label_b.lower():
             category = f"said_{label_b}"
         else:
-            # Tie-break: whichever label appears first in the window.
-            first_label = None
-            for u in uttered:
-                c = (u.get("content") or "").strip().lower()
-                if c == label_a.lower():
-                    first_label = label_a
-                    break
-                if c == label_b.lower():
-                    first_label = label_b
-                    break
-            if first_label is None:
-                category = "other"
-            else:
-                category = f"said_{first_label}"
+            category = "other"
 
     first_content = uttered[0]["content"].strip() if uttered else None
 
@@ -809,9 +821,21 @@ def _run_single_condition(
                 nars.input("<need_label --> [felt]>! :|:", cycles=goal_cycles)
                 # Re-present perception inside the scoring window (still label-free).
                 nars.input(f"<{stimulus} --> [seen]>. :|:", cycles=20)
-                # Give outputs time to arrive before closing the window.
-                time.sleep(goal_window_wait_s)
-                _wait_for_quiescence(harness, timeout_s=3.0, idle_s=0.45)
+                
+                # Single-response policy: wait for 'water' or 'wind', then cut short.
+                deadline = window_start + goal_window_wait_s
+                while time.time() < deadline:
+                    relevant = [u for u in harness.utterances if u["t"] >= window_start and u["mode"] == "TEST"]
+                    found_target = False
+                    for u in relevant:
+                        c = (u.get("content") or "").strip().lower()
+                        if c in ("water", "wind"):
+                            found_target = True
+                            break
+                    if found_target:
+                        break
+                    time.sleep(0.1)
+                
                 window_end = time.time()
 
                 score = _score_trial(
@@ -935,7 +959,10 @@ def run_single_water_protocol(
     config: str | None,
     nal: str | None,
     shell_cycles: str | int | None,
+    reps: int = 1,
+    seed: int = 0,
 ) -> None:
+    global RNG_SEED
     _ensure_jar_or_build(jar_path)
 
     run_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -943,22 +970,74 @@ def run_single_water_protocol(
     print("\n==============================")
     print("Project Broca: WATER transfer")
     print("==============================")
-    print(f"condition={run_condition} ablate_bridge={ablate_bridge}")
+    print(f"condition={run_condition} ablate_bridge={ablate_bridge} reps={reps} seed={seed}")
 
-    summary = _run_single_condition(
-        "train(W1,N1)->test(W2,N2)",
-        jar_path=jar_path,
-        train=True,
-        ablate_bridge=ablate_bridge,
-        run_condition=run_condition,
-        run_stamp=run_stamp,
-        config=config,
-        nal=nal,
-        shell_cycles=shell_cycles,
-    )
-    summary_path = _write_summary(run_condition, summary, run_stamp=run_stamp)
-    print(f"[Runner] Summary saved: {summary_path}")
-    print(f"[Runner] JSONL logs saved under: runs/*_{run_condition}.jsonl")
+    summaries = []
+
+    for i in range(reps):
+        current_seed = seed + i
+        RNG_SEED = current_seed
+        print(f"\n--- Rep {i+1}/{reps} (seed={current_seed}) ---")
+
+        # Force regeneration of procedural stimuli and embeddings for each seed.
+        embedding_file = (
+            EMBEDDING_FILE.replace(".txt", "_ablate.txt") if ablate_bridge else EMBEDDING_FILE
+        )
+        if os.path.exists(embedding_file):
+            os.remove(embedding_file)
+        
+        for token in VISUAL_STIMULI.keys():
+            path = os.path.join(IMAGE_DIR, f"{token}.png")
+            if os.path.exists(path):
+                os.remove(path)
+
+        summary = _run_single_condition(
+            "train(W1,N1)->test(W2,N2)",
+            jar_path=jar_path,
+            train=True,
+            ablate_bridge=ablate_bridge,
+            run_condition=run_condition,
+            run_stamp=f"{run_stamp}_rep{i}",
+            config=config,
+            nal=nal,
+            shell_cycles=shell_cycles,
+        )
+        summaries.append(summary)
+        _write_summary(f"{run_condition}_rep{i}", summary, run_stamp=run_stamp)
+
+    # Aggregate results
+    agg_confusion = {
+        "W2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
+        "N2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
+    }
+    agg_cosines = {
+        "cos_W2_W1": [], "cos_W2_N1": [], "cos_N2_N1": [], "cos_N2_W1": []
+    }
+
+    for s in summaries:
+        conf = s.get("confusion", {})
+        for case in ("W2", "N2"):
+            for k in agg_confusion[case]:
+                agg_confusion[case][k] += conf.get(case, {}).get(k, 0)
+        
+        cos = s.get("cosines", {})
+        for k in agg_cosines:
+            if k in cos:
+                agg_cosines[k].append(cos[k])
+
+    avg_cosines = {k: sum(v)/len(v) if v else 0.0 for k, v in agg_cosines.items()}
+
+    agg_summary = {
+        "name": f"Aggregate {run_condition} ({reps} reps)",
+        "confusion": agg_confusion,
+        "cosines": avg_cosines,
+        "reps": reps,
+        "seed_start": seed,
+    }
+
+    summary_path = _write_summary(run_condition, agg_summary, run_stamp=run_stamp)
+    print(f"[Runner] Aggregate summary saved: {summary_path}")
+    print(f"[Runner] JSONL logs saved under: runs/{run_stamp}_rep*_{run_condition}.jsonl")
 
     # If the other condition has been run previously, print + save a comparison.
     other = "ablate_bridge" if run_condition == "baseline" else "baseline"
@@ -967,18 +1046,15 @@ def run_single_water_protocol(
         return
 
     other_path, other_summary = other_loaded
-    this_loaded = _find_latest_summary(run_condition)
-    if this_loaded is None:
-        return
-    this_path, this_summary = this_loaded
+    this_summary = agg_summary
+    this_path = summary_path
 
     if run_condition == "baseline":
         _print_side_by_side("baseline", this_summary, "ablate_bridge", other_summary)
     else:
         _print_side_by_side("baseline", other_summary, "ablate_bridge", this_summary)
 
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    compare_path = os.path.join("runs", f"{ts}_compare_baseline_vs_ablate_bridge.json")
+    compare_path = os.path.join("runs", f"{run_stamp}_compare_baseline_vs_ablate_bridge.json")
     with open(compare_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -1054,6 +1130,18 @@ if __name__ == "__main__":
         help="Operational runner entrypoint (audit-safe).",
     )
     parser.add_argument(
+        "--reps",
+        type=int,
+        default=1,
+        help="Number of repetitions (default: 1).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base random seed (default: 0).",
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="Optional NARS config XML for Shell positional arg #1 (default: null).",
@@ -1089,6 +1177,8 @@ if __name__ == "__main__":
             config=args.config,
             nal=args.nal,
             shell_cycles=args.cycles,
+            reps=args.reps,
+            seed=args.seed,
         )
     else:
         run_water_protocol(ablate_bridge=bool(args.ablate_bridge))
