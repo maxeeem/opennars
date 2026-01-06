@@ -694,22 +694,29 @@ def _score_trial(
     b = int(counts.get(label_b.lower(), 0))
 
     category = "none"
+    pred_label = "none"
+    
     if not uttered:
         category = "none"
+        pred_label = "none"
     else:
         # First utterance determines the label (single-response policy).
         first_c = uttered[0]["content"].strip().lower()
         if first_c == label_a.lower():
             category = f"said_{label_a}"
+            pred_label = label_a
         elif first_c == label_b.lower():
             category = f"said_{label_b}"
+            pred_label = label_b
         else:
             category = "other"
+            pred_label = "other"
 
     first_content = uttered[0]["content"].strip() if uttered else None
 
     return {
         "category": category,
+        "pred_label": pred_label,
         "time_to_first_utterance": time_to_first,
         "first_utterance": first_content,
         "label_counts": {label_a: a, label_b: b},
@@ -797,18 +804,20 @@ def _run_single_condition(
 
         # Test: bounded per-trial evaluation window.
         harness.set_mode("TEST")
-        confusion = {
-            "W2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
-            "N2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
-        }
+        
         trial_rows: list[dict] = []
         test_cases = [
-            ("W2", "sensation_W2"),
-            ("N2", "sensation_N2"),
+            ("W2", "sensation_W2", "water"),
+            ("N2", "sensation_N2", "wind"),
         ]
-        for case_name, stimulus in test_cases:
+        
+        # Global trial counter for this run
+        trial_idx = 0
+        
+        for case_name, stimulus, target_label in test_cases:
             print(f"\n--- TEST CASE: {case_name} stimulus={stimulus} ---")
             for i in range(test_trials):
+                trial_idx += 1
                 harness.set_stimulus(stimulus)
 
                 # Present stimulus + settle.
@@ -845,16 +854,18 @@ def _run_single_condition(
                     label_a="water",
                     label_b="wind",
                 )
-                confusion_key = score["category"]
-                if confusion_key not in ("said_water", "said_wind", "other", "none"):
-                    confusion_key = "other"
-                confusion[case_name][confusion_key] += 1
+                
                 trial_rows.append(
                     {
-                        "case": case_name,
-                        "trial": i,
-                        "stimulus": stimulus,
-                        **score,
+                        "trial_id": trial_idx,
+                        "stimulus": case_name, # W2 or N2
+                        "target_label": target_label,
+                        "pred_label": score["pred_label"],
+                        "time_to_first_utt": score["time_to_first_utterance"],
+                        "cos_W2_W1": cos_w2_w1,
+                        "cos_W2_N1": cos_w2_n1,
+                        "cos_N2_N1": cos_n2_n1,
+                        "cos_N2_W1": cos_n2_w1,
                     }
                 )
 
@@ -880,14 +891,7 @@ def _run_single_condition(
         # Return a richer audit summary.
         return {
             "name": name,
-            "confusion": confusion,
             "trials": trial_rows,
-            "cosines": {
-                "cos_W2_W1": cos_w2_w1,
-                "cos_W2_N1": cos_w2_n1,
-                "cos_N2_N1": cos_n2_n1,
-                "cos_N2_W1": cos_n2_w1,
-            },
         }
     finally:
         try:
@@ -1006,38 +1010,90 @@ def run_single_water_protocol(
         _write_summary(f"{run_condition}_rep{i}", summary, run_stamp=run_stamp)
 
     # Aggregate results
+    all_trials = []
+    
+    for i, s in enumerate(summaries):
+        for t in s["trials"]:
+            t["rep"] = i
+            t["seed"] = seed + i
+            t["condition"] = run_condition
+            all_trials.append(t)
+
+    # Write trials.jsonl
+    trials_path = os.path.join("runs", f"{run_stamp}_{run_condition}.trials.jsonl")
+    with open(trials_path, "w", encoding="utf-8") as f:
+        for t in all_trials:
+            f.write(json.dumps(t, ensure_ascii=False) + "\n")
+    print(f"[Runner] Trials log saved: {trials_path}")
+
+    # Hard assertions
+    w2_trials = [t for t in all_trials if t["stimulus"] == "W2"]
+    n2_trials = [t for t in all_trials if t["stimulus"] == "N2"]
+    
+    # Expected trials per rep is 8 (default test_trials in _run_single_condition)
+    # We need to know test_trials. It is hardcoded to 8 in _run_single_condition default.
+    # But we can infer it from the first rep.
+    expected_per_rep = len([t for t in summaries[0]["trials"] if t["stimulus"] == "W2"])
+    expected_total = expected_per_rep * reps
+    
+    if len(w2_trials) != expected_total:
+        raise RuntimeError(f"Assertion failed: W2 trials count {len(w2_trials)} != expected {expected_total}")
+    if len(n2_trials) != expected_total:
+        raise RuntimeError(f"Assertion failed: N2 trials count {len(n2_trials)} != expected {expected_total}")
+
+    # Compute Confusion Matrix
     agg_confusion = {
         "W2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
         "N2": {"said_water": 0, "said_wind": 0, "other": 0, "none": 0},
     }
-    agg_cosines = {
-        "cos_W2_W1": [], "cos_W2_N1": [], "cos_N2_N1": [], "cos_N2_W1": []
-    }
+    
+    for t in all_trials:
+        stim = t["stimulus"]
+        pred = t["pred_label"]
+        if pred == "water":
+            agg_confusion[stim]["said_water"] += 1
+        elif pred == "wind":
+            agg_confusion[stim]["said_wind"] += 1
+        elif pred == "none":
+            agg_confusion[stim]["none"] += 1
+        else:
+            agg_confusion[stim]["other"] += 1
 
-    for s in summaries:
-        conf = s.get("confusion", {})
-        for case in ("W2", "N2"):
-            for k in agg_confusion[case]:
-                agg_confusion[case][k] += conf.get(case, {}).get(k, 0)
-        
-        cos = s.get("cosines", {})
-        for k in agg_cosines:
-            if k in cos:
-                agg_cosines[k].append(cos[k])
+    # Compute Accuracy (excluding none)
+    def calc_acc(stim, target):
+        relevant = [t for t in all_trials if t["stimulus"] == stim and t["pred_label"] != "none"]
+        if not relevant:
+            return 0.0
+        correct = len([t for t in relevant if t["pred_label"] == target])
+        return correct / len(relevant)
 
-    avg_cosines = {k: sum(v)/len(v) if v else 0.0 for k, v in agg_cosines.items()}
+    acc_w2 = calc_acc("W2", "water")
+    acc_n2 = calc_acc("N2", "wind")
+    balanced_acc = (acc_w2 + acc_n2) / 2.0
+
+    # Average Cosines
+    avg_cosines = {}
+    for k in ["cos_W2_W1", "cos_W2_N1", "cos_N2_N1", "cos_N2_W1"]:
+        vals = [t[k] for t in all_trials if k in t]
+        avg_cosines[k] = sum(vals) / len(vals) if vals else 0.0
 
     agg_summary = {
         "name": f"Aggregate {run_condition} ({reps} reps)",
         "confusion": agg_confusion,
+        "accuracy_excl_none": {
+            "W2": acc_w2,
+            "N2": acc_n2,
+            "balanced": balanced_acc
+        },
         "cosines": avg_cosines,
         "reps": reps,
         "seed_start": seed,
+        "total_trials_per_stimulus": expected_total,
+        "trials_path": trials_path
     }
 
     summary_path = _write_summary(run_condition, agg_summary, run_stamp=run_stamp)
     print(f"[Runner] Aggregate summary saved: {summary_path}")
-    print(f"[Runner] JSONL logs saved under: runs/{run_stamp}_rep*_{run_condition}.jsonl")
 
     # If the other condition has been run previously, print + save a comparison.
     other = "ablate_bridge" if run_condition == "baseline" else "baseline"
@@ -1048,6 +1104,10 @@ def run_single_water_protocol(
     other_path, other_summary = other_loaded
     this_summary = agg_summary
     this_path = summary_path
+    
+    # Check if expected counts match
+    if other_summary.get("total_trials_per_stimulus") != expected_total:
+         print(f"[Warning] Trial count mismatch between conditions: {other_summary.get('total_trials_per_stimulus')} vs {expected_total}")
 
     if run_condition == "baseline":
         _print_side_by_side("baseline", this_summary, "ablate_bridge", other_summary)
