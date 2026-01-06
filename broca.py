@@ -519,6 +519,7 @@ class NarsOrganism:
         self.env = None  # Will attach later
         self.on_say = None
         self.on_input = None
+        self.bridge_injection_detected = False
 
     def start(self):
         if not os.path.exists(self.jar_path):
@@ -600,6 +601,9 @@ class NarsOrganism:
                 if not line:
                     continue
                 clean_line = line.strip()
+
+                if "[VectorBridgeSummary] injected=" in clean_line:
+                    self.bridge_injection_detected = True
 
                 if "[OUTPUT]" in clean_line:
                     content = clean_line.split("[OUTPUT]")[1].strip()
@@ -800,6 +804,111 @@ def _score_trial(
     }
 
 
+
+def _run_nn_baseline_condition(
+    name: str,
+    domain: DomainSpec,
+    *,
+    run_condition: str,
+    run_stamp: str,
+    ablate_bridge: bool,
+    reps: int = 1, # Not strictly used here but kept for signature consistency if needed
+) -> dict:
+    """Run the Trivial NN Baseline: pure Python cosine similarity."""
+    
+    # 1. Setup Embeddings (Simulate Retina/Vection)
+    base_emb = domain.embedding_file_base
+    embedding_file = base_emb # NN always sees the full vectors, ablation doesn't make sense unless we want to test broken embeddings? 
+    # User said: "Trivial NN Baseline... implement a pure-Python routine"
+    # User didn't specify if NN should use ablations, but usually baselines use good data.
+    # However, to be fair comparison with ablate_bridge, maybe we should support it?
+    # Let's support ablate_bridge flag for NN too, just in case.
+    embedding_file = (
+        base_emb.replace(".txt", "_ablate.txt") if ablate_bridge else base_emb
+    )
+    
+    required_vocab = domain.all_stimuli + domain.vector_terms
+    if not _embedding_file_has_all_vocab(embedding_file, required_vocab):
+        Retina(domain).generate_embedding_file(embedding_file, ablate_bridge=ablate_bridge)
+        
+    vectors = _load_embedding_vectors(embedding_file, set(domain.all_stimuli))
+    
+    label1, label2 = domain.labels
+    s1_train, s2_train = domain.train_stimuli
+    s1_test, s2_test = domain.test_stimuli
+    
+    vecs = {
+        "Tr1": vectors.get(s1_train) or [],
+        "Tr2": vectors.get(s2_train) or [],
+        "Te1": vectors.get(s1_test) or [],
+        "Te2": vectors.get(s2_test) or [],
+    }
+    
+    # Cosine diagnostics
+    cosines = {
+        "Te1_Tr1": _cosine(vecs["Te1"], vecs["Tr1"]),
+        "Te1_Tr2": _cosine(vecs["Te1"], vecs["Tr2"]),
+        "Te2_Tr2": _cosine(vecs["Te2"], vecs["Tr2"]),
+        "Te2_Tr1": _cosine(vecs["Te2"], vecs["Tr1"]),
+    }
+    
+    print(f"\n=== NN BASELINE ({name}) ===")
+    print(f"cosines: {cosines}")
+    
+    trial_rows = []
+    
+    # Simulate Test Trials (deterministically, but loop to match format)
+    # NN is deterministic for fixed embeddings.
+    
+    test_cases = [
+        ("Te1", s1_test, label1),
+        ("Te2", s2_test, label2),
+    ]
+    
+    # Standard 8 trials per case to match NARS structure
+    trials_per_case = 8 
+    
+    trial_idx = 0
+    for case_name, stimulus, target_label in test_cases:
+        # Prediction logic:
+        # Sim(Stim, Tr1) -> Label1
+        # Sim(Stim, Tr2) -> Label2
+        # Argmax.
+        
+        sim_L1 = _cosine(vecs[case_name], vecs["Tr1"])
+        sim_L2 = _cosine(vecs[case_name], vecs["Tr2"])
+        
+        if sim_L1 > sim_L2:
+            pred = label1
+        elif sim_L2 > sim_L1:
+            pred = label2
+        else:
+            pred = "none" # Tie (unlikely with floats)
+            
+        for _ in range(trials_per_case):
+            trial_idx += 1
+            row = {
+                "trial_id": trial_idx,
+                "stimulus": case_name,
+                "target_label": target_label,
+                "pred_label": pred,
+                "time_to_first_utt": 0.001, # Instant
+                "category": f"said_{pred}" if pred != "none" else "none",
+                "first_utterance": pred,
+                "label_counts": {label1: 1 if pred==label1 else 0, label2: 1 if pred==label2 else 0},
+                "utterance_count": 1
+            }
+            row.update(cosines)
+            trial_rows.append(row)
+            
+    return {
+        "name": name,
+        "domain": domain.name,
+        "trials": trial_rows,
+        "cosines": cosines
+    }
+
+
 def _run_single_condition(
     name: str,
     domain: DomainSpec,
@@ -982,6 +1091,15 @@ def _run_single_condition(
         harness.assert_no_label_leakage_in_test(label1)
         harness.assert_no_label_leakage_in_test(label2)
         harness.assert_no_confirm_injection_in_test()
+        
+        if run_condition == "bridge_off":
+            # Note: VectorInference only logs injections if VECTOR_BRIDGE_LOG=true or periodically.
+            # But if it logs even ONE, that's a failure.
+            # If it logs nothing, we assume success (since checking for absolute 0 requires knowing it prints count=0, which it doesn't).
+            # However, standard behavior is silent if nothing happens.
+            if nars.bridge_injection_detected:
+                raise RuntimeError("Audit failure: bridge_off requested but VectorBridge injections were detected in logs!")
+
         # Return a richer audit summary.
         return {
             "name": name,
@@ -1097,18 +1215,33 @@ def run_experiment_reps(
             if os.path.exists(path):
                 os.remove(path)
 
-        summary = _run_single_condition(
-            f"train->test ({domain.name})",
-            domain,
-            jar_path=jar_path,
-            train=True,
-            ablate_bridge=ablate_bridge,
-            run_condition=run_condition,
-            run_stamp=f"{run_stamp}_{domain.name}_rep{i}",
-            config=config,
-            nal=nal,
-            shell_cycles=shell_cycles,
-        )
+        # Prepare config for bridge_off if needed
+        eff_config = config
+        if run_condition == "bridge_off" and eff_config is None:
+            eff_config = "config/bridge_off.xml"
+
+        if run_condition == "NN":
+            summary = _run_nn_baseline_condition(
+                f"NN Baseline ({domain.name})",
+                domain,
+                run_condition=run_condition,
+                run_stamp=f"{run_stamp}_{domain.name}_rep{i}",
+                ablate_bridge=ablate_bridge,
+                reps=reps,
+            )
+        else:
+            summary = _run_single_condition(
+                f"train->test ({domain.name})",
+                domain,
+                jar_path=jar_path,
+                train=True,
+                ablate_bridge=ablate_bridge,
+                run_condition=run_condition,
+                run_stamp=f"{run_stamp}_{domain.name}_rep{i}",
+                config=eff_config,
+                nal=nal,
+                shell_cycles=shell_cycles,
+            )
         summaries.append(summary)
         _write_summary(f"{domain.name}_{run_condition}_rep{i}", summary, run_stamp=run_stamp)
 
@@ -1166,6 +1299,31 @@ def run_experiment_reps(
     acc_te2 = calc_acc("Te2", label2)
     balanced_acc = (acc_te1 + acc_te2) / 2.0
 
+    # Bootstrap CI (Task 1.3)
+    def _get_acc_samples(stim, target):
+        relevant = [t for t in all_trials if t["stimulus"] == stim and t["pred_label"] != "none"]
+        return [1.0 if t["pred_label"] == target else 0.0 for t in relevant]
+
+    def _boot_ci(data, n_boot=1000):
+        if not data: return [0.0, 0.0]
+        n = len(data)
+        means = []
+        import random
+        for _ in range(n_boot):
+             # Simple resampling
+             s_sum = 0
+             for _ in range(n):
+                 s_sum += data[int(random.random() * n)]
+             means.append(s_sum / n)
+        means.sort()
+        # 95% CI
+        lower = means[int(n_boot * 0.025)]
+        upper = means[int(n_boot * 0.975)]
+        return [lower, upper]
+
+    ci_te1 = _boot_ci(_get_acc_samples("Te1", label1))
+    ci_te2 = _boot_ci(_get_acc_samples("Te2", label2))
+
     # Answered Rate
     total = len(all_trials)
     answered = len([t for t in all_trials if t["pred_label"] != "none"])
@@ -1207,7 +1365,9 @@ def run_experiment_reps(
         "metrics": {
             "accuracy_excl_none": {
                 "Te1": acc_te1,
+                "Te1_95CI": ci_te1,
                 "Te2": acc_te2,
+                "Te2_95CI": ci_te2,
                 "balanced": balanced_acc
             },
             "answered_rate": answered_rate,
@@ -1261,15 +1421,18 @@ def run_experiment_reps(
 
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Project Broca: audit-safe grounding + transfer (ICLR Package)"
     )
+    # Renamed --run to --condition, but keeping alias logic would be complex with choices.
+    # We will enforce --condition.
     parser.add_argument(
-        "--run",
-        choices=["baseline", "ablate_bridge"],
+        "--condition",
+        choices=["bridge_on", "bridge_off", "ablate_bridge", "NN"],
         required=True,
-        help="Operational runner entrypoint (audit-safe).",
+        help="Experimental condition: bridge_on (baseline), bridge_off (control), ablate_bridge (control), or NN (baseline).",
     )
     parser.add_argument(
         "--domain",
@@ -1280,13 +1443,18 @@ if __name__ == "__main__":
         "--reps",
         type=int,
         default=1,
-        help="Number of repetitions (default: 1).",
+        help="Number of repetitions per condition (default: 1).",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=0,
         help="Base random seed (default: 0).",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Run parameter sweep (volume 0..100) instead of single run.",
     )
     parser.add_argument(
         "--config",
@@ -1325,12 +1493,48 @@ if __name__ == "__main__":
         print(f"[Error] Unknown domain: {args.domain}. Choices: {list(DOMAINS.keys())} or all")
         sys.exit(1)
 
+    # In sweep mode, we override config generation to iterate parameters
+    # But for now, just implement the basic structure. The user asked for "Iterate volume parameters 0..100".
+    # This likely requires generating temporary config files.
+    # Since I cannot easily modify Java config on fly without file, I'll skip implementing full sweep logic 
+    # right now unless I create a helper. I'll stick to basic condition running first as that covers 90% of requests.
+    
     for domain in selected_domains:
+        if args.sweep:
+            timestamp = args.stamp or time.strftime("%Y%m%d_%H%M%S")
+            print(f"--- STARTING SWEEP (VOLUME 0..100) for {domain.name} ---")
+            # Step 10: 0, 10, 20... 100
+            for vol in range(0, 101, 10):
+                print(f"\n[Sweep] VOLUME={vol}")
+                
+                cfg_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<config>
+  <conf name="VOLUME" value="{vol}"/>
+</config>"""
+                os.makedirs("config", exist_ok=True)
+                cfg_path = f"config/temp_sweep_vol_{vol}.xml"
+                with open(cfg_path, "w") as f:
+                    f.write(cfg_content)
+                
+                run_experiment_reps(
+                    domain,
+                    run_condition=args.condition,
+                    jar_path=args.jar,
+                    ablate_bridge=(args.condition == "ablate_bridge"),
+                    config=cfg_path,
+                    nal=args.nal,
+                    shell_cycles=args.cycles,
+                    reps=args.reps,
+                    seed=args.seed,
+                    force_stamp=f"{timestamp}_vol{vol}",
+                )
+            continue
+        
         run_experiment_reps(
             domain,
-            run_condition=args.run,
+            run_condition=args.condition,
             jar_path=args.jar,
-            ablate_bridge=(args.run == "ablate_bridge"),
+            ablate_bridge=(args.condition == "ablate_bridge"),
             config=args.config,
             nal=args.nal,
             shell_cycles=args.cycles,
@@ -1338,4 +1542,5 @@ if __name__ == "__main__":
             seed=args.seed,
             force_stamp=args.stamp,
         )
+
 
