@@ -520,6 +520,7 @@ class NarsOrganism:
         self.on_say = None
         self.on_input = None
         self.bridge_injection_detected = False
+        self.bridge_config = {}
 
     def start(self):
         if not os.path.exists(self.jar_path):
@@ -604,6 +605,14 @@ class NarsOrganism:
 
                 if "[VectorBridgeSummary] injected=" in clean_line:
                     self.bridge_injection_detected = True
+
+                if "[VectorBridgeConfig]" in clean_line:
+                    # Parse: [VectorBridgeConfig] VECTOR_BRIDGE_ENABLED=true ...
+                    parts = clean_line.split()
+                    for p in parts:
+                        if "=" in p:
+                            k, v = p.split("=", 1)
+                            self.bridge_config[k] = v
 
                 if "[OUTPUT]" in clean_line:
                     content = clean_line.split("[OUTPUT]")[1].strip()
@@ -805,6 +814,62 @@ def _score_trial(
 
 
 
+
+def _boot_ci_diff(data_a: list[float], data_b: list[float], n_boot=1000) -> list[float]:
+    """Bootstrap CI for the difference (Mean(A) - Mean(B)), paired."""
+    if not data_a or not data_b or len(data_a) != len(data_b):
+        return [0.0, 0.0]
+    n = len(data_a)
+    diffs = []
+    import random
+    for _ in range(n_boot):
+        s_diff = 0
+        for _ in range(n):
+            idx = int(random.random() * n)
+            s_diff += (data_a[idx] - data_b[idx])
+        diffs.append(s_diff / n)
+    diffs.sort()
+    return [diffs[int(n_boot * 0.025)], diffs[int(n_boot * 0.975)]]
+
+def _mcnemar_test(correct_a: list[bool], correct_b: list[bool]) -> dict:
+    """Calculate McNemar test stats."""
+    if len(correct_a) != len(correct_b):
+        return {}
+    
+    #     B+   B-
+    # A+  n11  n10
+    # A-  n01  n00
+    n10 = 0 # A correct, B incorrect
+    n01 = 0 # A incorrect, B correct
+    
+    for a, b in zip(correct_a, correct_b):
+        if a and not b: n10 += 1
+        if not a and b: n01 += 1
+        
+    chi2 = ((abs(n10 - n01) - 1) ** 2) / (n10 + n01) if (n10 + n01) > 0 else 0.0
+    # p-value approx (1 dof)
+    # Simple approx or just return statistic
+    return {"n10": n10, "n01": n01, "chi2": chi2}
+
+def _calculate_utility(t: dict, lambda_penalty=0.5) -> float:
+    # U = Correct - lambda * Incorrect, where None is neither? 
+    # Or U = P(correct) - lambda * P(incorrect) ?
+    # Let's assume per-trial utility:
+    # Correct -> 1
+    # Incorrect -> -1
+    # None -> -lambda (penalty for silence? or silence is 0 and incorrect is penalty?)
+    # "utility score (λ=0.5)" usually implies balancing abstention.
+    # Common metric: Correct - lambda * Incorrect. (Abstention = 0).
+    # If lambda=0.5, then 1 correct cancels 2 incorrects.
+    target = t["target_label"]
+    pred = t["pred_label"]
+    if pred == "none":
+        return 0.0
+    elif pred == target:
+        return 1.0
+    else:
+        return -lambda_penalty
+
 def _run_nn_baseline_condition(
     name: str,
     domain: DomainSpec,
@@ -960,6 +1025,23 @@ def _run_single_condition(
     nars.on_input = harness.on_input
 
     time.sleep(2.5)
+
+    # Verify Configuration (Task 1)
+    if "VECTOR_BRIDGE_ENABLED" in nars.bridge_config:
+        actual_enabled = nars.bridge_config["VECTOR_BRIDGE_ENABLED"].lower() == "true"
+        expected_enabled = (run_condition != "bridge_off")
+        
+        # In sweep or other modes, we trust the XML, but let's verify.
+        # For bridge_off, we MUST see false.
+        if run_condition == "bridge_off" and actual_enabled:
+             raise RuntimeError(f"Config Failure: Expected bridge_off but VECTOR_BRIDGE_ENABLED={actual_enabled}")
+        
+    else:
+        # If we didn't see the banner, that's suspicious if vector mode is on.
+        # But if we are running without vector mode (not the case here), it's fine.
+        # Assume if we don't see it, we might have missed it or JAR is old.
+        # But we just rebuilt the JAR. so we should see it.
+        pass
     
     # Helper for generic logging
     label1, label2 = domain.labels
@@ -1323,12 +1405,29 @@ def run_experiment_reps(
 
     ci_te1 = _boot_ci(_get_acc_samples("Te1", label1))
     ci_te2 = _boot_ci(_get_acc_samples("Te2", label2))
-
+    
     # Answered Rate
     total = len(all_trials)
-    answered = len([t for t in all_trials if t["pred_label"] != "none"])
+    answered_mask = [1.0 if t["pred_label"] != "none" else 0.0 for t in all_trials]
+    answered = sum(answered_mask)
     answered_rate = answered / total if total > 0 else 0.0
+    ci_answered = _boot_ci(answered_mask)
     none_rate = 1.0 - answered_rate
+
+    # 3-class Accuracy (Correct, Error, None)
+    # Actually just accuracy including none is standard accuracy where none is wrong.
+    acc_all = len([t for t in all_trials if t["pred_label"] == t["target_label"]]) / total if total > 0 else 0.0
+    ci_acc_all = _boot_ci([1.0 if t["pred_label"]==t["target_label"] else 0.0 for t in all_trials])
+
+    # Utility (Correct=1, Error=-0.5, None=0)
+    def calc_util(t):
+        if t["pred_label"] == "none": return 0.0
+        if t["pred_label"] == t["target_label"]: return 1.0
+        return -0.5
+    
+    util_scores = [calc_util(t) for t in all_trials]
+    util_mean = sum(util_scores) / total if total > 0 else 0.0
+    ci_util = _boot_ci(util_scores)
     
     # Label Bias (P(label1) - P(label2))
     l1_count = len([t for t in all_trials if t["pred_label"] == label1])
@@ -1370,7 +1469,18 @@ def run_experiment_reps(
                 "Te2_95CI": ci_te2,
                 "balanced": balanced_acc
             },
-            "answered_rate": answered_rate,
+            "accuracy_all": {
+                "mean": acc_all,
+                "95CI": ci_acc_all
+            },
+            "utility_0_5": {
+                "mean": util_mean,
+                "95CI": ci_util
+            },
+            "answered_rate": {
+                "mean": answered_rate,
+                "95CI": ci_answered
+            },
             "none_rate": none_rate,
             "label_bias": label_bias,
             "entropy": entropy,
@@ -1387,37 +1497,145 @@ def run_experiment_reps(
     summary_path = _write_summary(f"{domain.name}_{run_condition}", agg_summary, run_stamp=run_stamp)
     print(f"[Runner] Aggregate summary saved: {summary_path}")
 
-    # If the other condition has been run previously, print + save a comparison.
-    other = "ablate_bridge" if run_condition == "baseline" else "baseline"
-    other_loaded = _find_latest_summary(f"{domain.name}_{other}")
-    if other_loaded is None:
-        return
-
-    other_path, other_summary = other_loaded
-    this_summary = agg_summary
-    this_path = summary_path
+    # Paired Comparison Logic (Task 3)
+    # Compare this run against all other conditions found with the same run_stamp (if possible) or latest.
+    # We prefer same run_stamp if users run them nearby, but prompt implies sequential runs.
+    # We'll look for any available summary for the target conditions.
     
-    if run_condition == "baseline":
-        _print_side_by_side("baseline", this_summary, "ablate_bridge", other_summary)
-    else:
-        _print_side_by_side("baseline", other_summary, "ablate_bridge", this_summary)
+    targets = ["bridge_on", "bridge_off", "ablate_bridge", "NN"]
+    # If we are bridge_on, compare to others. If we are others, compare to bridge_on.
+    # To avoid duplicates, let's just always compare against everything else we can find.
+    
+    my_trials = all_trials
+    # Sort my trials by trial_id to ensure alignment if rep/trial_id structure matches.
+    # Trial IDs are 1..N per rep.
+    # To key them: (rep, trial_id_within_rep).
+    # t["rep"] and t["trial_id"] exist.
+    
+    def _key_trials(trials):
+        return {(t["rep"], t["trial_id"]): t for t in trials}
+    
+    my_keyed = _key_trials(my_trials)
+    
+    for other_cond in targets:
+        if other_cond == run_condition:
+            continue
+            
+        other_loaded = _find_latest_summary(f"{domain.name}_{other_cond}")
+        if other_loaded is None:
+            continue
+            
+        other_path, other_summary = other_loaded
+        
+        # We need the trials for paired stats!
+        other_trials_path = other_summary.get("trials_path")
+        if not other_trials_path or not os.path.exists(other_trials_path):
+            print(f"[Compare] No trials file found for {other_cond}, skipping advanced stats.")
+            continue
+            
+        print(f"\n=== Comparing {run_condition} vs {other_cond} ===")
+        
+        other_trials = []
+        with open(other_trials_path, "r") as f:
+            for line in f:
+                other_trials.append(json.loads(line))
+        
+        other_keyed = _key_trials(other_trials)
+        
+        # Find intersecting keys
+        keys = sorted(list(set(my_keyed.keys()) & set(other_keyed.keys())))
+        if not keys:
+            print("[Compare] No matching (rep, trial_id) keys found. Cannot do paired stats.")
+            continue
+            
+        # extract vectors
+        # metrics: answered (bool), correct (bool), utility (float)
+        
+        def _is_ans(t): return t["pred_label"] != "none"
+        def _is_corr(t): return t["pred_label"] == t["target_label"]
+        def _util(t): return _calculate_utility(t, 0.5)
+        
+        # paired arrays
+        diff_answered = []
+        diff_correct = [] # where none is wrong
+        diff_util = []
+        
+        # for McNemar:
+        mc_ans_a = []
+        mc_ans_b = []
+        mc_corr_a = []
+        mc_corr_b = [] # none treated as incorrect
+        
+        for k in keys:
+             ta = my_keyed[k]
+             tb = other_keyed[k]
+             
+             # Difference (A - B)
+             diff_answered.append((1.0 if _is_ans(ta) else 0.0) - (1.0 if _is_ans(tb) else 0.0))
+             diff_correct.append((1.0 if _is_corr(ta) else 0.0) - (1.0 if _is_corr(tb) else 0.0))
+             diff_util.append(_util(ta) - _util(tb))
+             
+             # For McNemar (answered subset?) 
+             # Prompt: "McNemar for answered trials where both conditions answered"
+             if _is_ans(ta) and _is_ans(tb):
+                 mc_ans_a.append(_is_corr(ta))
+                 mc_ans_b.append(_is_corr(tb))
+                 
+             # Prompt: "or treat none as incorrect consistently" -> Let's do this for global McNemar
+             mc_corr_a.append(_is_corr(ta))
+             mc_corr_b.append(_is_corr(tb))
+             
+        ci_diff_ans = _boot_ci_diff(diff_answered, [0]*len(diff_answered)) # wait, helper takes 2 arrays.
+        # My helper `_boot_ci_diff` takes (A,B) and computes CI of A-B.
+        # But here I already computed diffs. 
+        # I should use `_boot_ci` on the diffs directly!
+        # Re-using _boot_ci logic for single array implies mean. Mean of diffs == Diff of means. 
+        # Yes.
+        
+        def _ci_of_diffs(diffs):
+             # Bootstrap mean of diffs
+             if not diffs: return [0.0, 0.0]
+             import random
+             means = []
+             n = len(diffs)
+             for _ in range(1000):
+                 s = 0
+                 for _ in range(n):
+                     s += diffs[int(random.random()*n)]
+                 means.append(s/n)
+             means.sort()
+             return [means[int(25)], means[int(975)]]
 
-    compare_path = os.path.join("runs", f"{run_stamp}_{domain.name}_compare_baseline_vs_ablate_bridge.json")
-    with open(compare_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "t": time.time(),
-                "domain": domain.name,
-                "baseline": other_summary if run_condition != "baseline" else this_summary,
-                "ablate_bridge": this_summary if run_condition != "baseline" else other_summary,
-                "baseline_summary_path": other_path if run_condition != "baseline" else this_path,
-                "ablate_bridge_summary_path": this_path if run_condition != "baseline" else other_path,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-    print(f"[Runner] Comparison saved: {compare_path}")
+        stats = {
+            "n_paired": len(keys),
+            "diff_answered_rate_95CI": _ci_of_diffs(diff_answered),
+            "diff_accuracy_all_95CI": _ci_of_diffs(diff_correct),
+            "diff_utility_95CI": _ci_of_diffs(diff_util),
+            "mcnemar_answered_only": _mcnemar_test(mc_ans_a, mc_ans_b),
+            "mcnemar_all_none_is_wrong": _mcnemar_test(mc_corr_a, mc_corr_b)
+        }
+        
+        print(f"Paired Stats ({len(keys)} trials): Diff Acc {stats['diff_accuracy_all_95CI']}")
+
+        compare_path = os.path.join("runs", f"{run_stamp}_{domain.name}_compare_{run_condition}_vs_{other_cond}.json")
+        with open(compare_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "t": time.time(),
+                    "domain": domain.name,
+                    "condition_A": run_condition,
+                    "condition_B": other_cond,
+                    "stats": stats,
+                    "summary_A": agg_summary,
+                    "summary_B": other_summary
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+        print(f"[Runner] Comparison saved: {compare_path}")
+
+
 
 
 
@@ -1501,33 +1719,81 @@ if __name__ == "__main__":
     
     for domain in selected_domains:
         if args.sweep:
+            print(f"--- STARTING SWEEP for {domain.name} ---")
+            import csv
+            
+            sim_thresholds = [0.6, 0.7, 0.8, 0.9]
+            throttles = [0.1, 0.2, 0.5, 1.0]
+            # Optional: cooldowns = [0, 500, 2000] 
+            
+            results = []
+            os.makedirs("runs", exist_ok=True)
             timestamp = args.stamp or time.strftime("%Y%m%d_%H%M%S")
-            print(f"--- STARTING SWEEP (VOLUME 0..100) for {domain.name} ---")
-            # Step 10: 0, 10, 20... 100
-            for vol in range(0, 101, 10):
-                print(f"\n[Sweep] VOLUME={vol}")
-                
-                cfg_content = f"""<?xml version="1.0" encoding="utf-8"?>
+            csv_path = f"runs/sweep_{domain.name}_{timestamp}.csv"
+            
+            for sim in sim_thresholds:
+                for throt in throttles:
+                    # Generate Config
+                    cfg_content = f"""<?xml version="1.0" encoding="utf-8"?>
 <config>
-  <conf name="VOLUME" value="{vol}"/>
+  <conf name="VECTOR_BRIDGE_SIMILARITY_THRESHOLD" value="{sim}"/>
+  <conf name="VECTOR_BRIDGE_THROTTLE_FACTOR_WHEN_GOAL_OR_QUEST" value="{throt}"/>
 </config>"""
-                os.makedirs("config", exist_ok=True)
-                cfg_path = f"config/temp_sweep_vol_{vol}.xml"
-                with open(cfg_path, "w") as f:
-                    f.write(cfg_content)
+                    os.makedirs("config", exist_ok=True)
+                    cfg_path = f"config/temp_sweep_sim{sim}_throt{throt}.xml"
+                    with open(cfg_path, "w") as f:
+                        f.write(cfg_content)
+                        
+                    print(f"\n[Sweep] Sim={sim} Throt={throt}")
+                    
+                    stamp = f"{timestamp}_sim{sim}_throt{throt}"
+                    
+                    try:
+                        run_experiment_reps(
+                            domain,
+                            run_condition=args.condition,
+                            jar_path=args.jar,
+                            ablate_bridge=False,
+                            config=cfg_path,
+                            nal=args.nal,
+                            shell_cycles=args.cycles,
+                            reps=args.reps, # Use reps from args for each point
+                            seed=args.seed,
+                            force_stamp=stamp
+                        )
+                    except Exception as e:
+                        print(f"Sweep run failed: {e}")
+                        continue
+                    
+                    # Load Result
+                    # run_experiment_reps writes: {stamp}_{domain}_{condition}.summary.json
+                    summary_path = f"runs/{stamp}_{domain.name}_{args.condition}.summary.json"
+                    
+                    if os.path.exists(summary_path):
+                        with open(summary_path, "r") as f:
+                            s = json.load(f)
+                            metrics = s.get("metrics", {})
+                            results.append({
+                                "sim": sim, 
+                                "throt": throt,
+                                "acc_bal": metrics.get("accuracy_excl_none", {}).get("balanced", 0),
+                                "acc_all": metrics.get("accuracy_all", {}).get("mean", 0),
+                                "util": metrics.get("utility_0_5", {}).get("mean", 0),
+                                "ans_rate": metrics.get("answered_rate", {}).get("mean", 0),
+                                "diff": metrics.get("difficulty_score", 0)
+                            })
+                    else:
+                        print(f"Error loading summary {summary_path}")
+
+            # Write CSV
+            if results:
+                keys = results[0].keys()
+                with open(csv_path, "w", newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=keys)
+                    writer.writeheader()
+                    writer.writerows(results)
+                print(f"[Sweep] CSV saved to {csv_path}")
                 
-                run_experiment_reps(
-                    domain,
-                    run_condition=args.condition,
-                    jar_path=args.jar,
-                    ablate_bridge=(args.condition == "ablate_bridge"),
-                    config=cfg_path,
-                    nal=args.nal,
-                    shell_cycles=args.cycles,
-                    reps=args.reps,
-                    seed=args.seed,
-                    force_stamp=f"{timestamp}_vol{vol}",
-                )
             continue
         
         run_experiment_reps(

@@ -139,6 +139,12 @@ public class Shell {
         log("creating Nar...");
         Nar nar = Shell.createNar(args);
 
+        // Verification banner for broca.py
+        if (Boolean.getBoolean("opennars.vector")) {
+            System.out.println("[VectorBridgeConfig] VECTOR_BRIDGE_ENABLED=" + nar.narParameters.VECTOR_BRIDGE_ENABLED + 
+                               " VECTOR_BRIDGE_SIMILARITY_THRESHOLD=" + nar.narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD);
+        }
+
         if (glovePath != null) {
             System.out.println("========================================");
             System.out.println("   VECTOR-NARS: Loading Embeddings...");
