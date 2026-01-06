@@ -59,7 +59,8 @@ public class SynonymTest {
                     cat,
                     kitty.vector,
                     termKitty,
-                    kitty);
+                    kitty,
+                    false);
 
             // Let the knowledge settle a bit.
             for (int i = 0; i < 25; i++) {

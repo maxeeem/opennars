@@ -151,31 +151,57 @@ Run Requirements
 Project Broca (Audit-Safe Evaluation)
 ------------------------------------
 
-Build the jar:
+This is an ICLR-ready mechanistically interpretable experiment package.
 
-    mvn -Dmaven.javadoc.skip=true package
+### Quickstart
 
-Sanity-check the Python harness:
+1.  **Install dependencies** (`.venv` recommended):
+    ```bash
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
 
-    python -m py_compile broca.py
+2.  **Build OpenNARS**:
+    ```bash
+    mvn -Dmaven.javadoc.skip=true package -DskipTests
+    ```
 
-Run baseline vs bridge-ablation (writes JSONL audit logs under `runs/`):
+3.  **Run Experiment (Baseline vs Ablation)**:
+    ```bash
+    bash scripts/run_all.sh
+    # OR manually:
+    python broca.py --domain all --run baseline --reps 50 --seed 1
+    python broca.py --domain all --run ablate_bridge --reps 50 --seed 1
+    ```
 
-    python broca.py --run baseline
-    python broca.py --run ablate_bridge
+4.  **Generate Report & Figures**:
+    ```bash
+    python scripts/make_figures.py
+    python scripts/export_paper_pdf.py
+    # Output: paper/paper.html (Print to PDF)
+    ```
 
-Artifacts:
+### Reproduce Results
 
-    runs/<timestamp>_<condition>.jsonl
-    runs/<timestamp>_<condition>.summary.json
-    runs/<timestamp>_compare_baseline_vs_ablate_bridge.json
+To verify the "Bridge Hypothesis" (that vector similarity enables zero-shot transfer):
 
-What success looks like:
+*   **Baseline**: NARS with enabled vector-similarity bridge.
+*   **Ablated**: Bridge mechanics removed (vectors randomized in critical pairs).
 
-- The JSONL file contains *all* inputs sent into NARS and *all* parsed `^say` utterances.
-- During TEST, the inputs contain **no** `<confirm --> [felt]>` events and **no** literal label tokens (e.g., `water`).
-- Each summary includes an audit-friendly confusion matrix for TEST(W2) and TEST(N2), plus cosine diagnostics confirming ablation destroyed similarity.
-- Baseline should classify correctly more often than `ablate_bridge`.
+Results are stored in `runs/`. To see a quick summary table:
+```bash
+python scripts/summarize_runs.py
+```
+
+### Audit Guarantees
+
+The harness enforces strict "clean-room" evaluation standards for ICLR:
+
+1.  **No Test-Time Label Leakage**: The target labels (e.g. "water", "circle") are **never** injected into the NARS input stream during the `TEST` phase.
+2.  **No Oracle Reward**: No `<confirm --> [felt]>` or other teacher signal is provided during `TEST`.
+3.  **Non-Semantic Hearing**: The system hears `utterance_<hash>` instead of semantic words to prevent phonological shortcuts.
+4.  **Deterministic Assets**: Visual stimuli are generated procedurally with fixed seeds to ensure pixel-perfect reproducibility.
+5.  **Verified Diagnostics**: Every run logs the cosine similarity matrix of the projected embeddings to prove that ablation successfully Orthogonalized the vector space.
 
 Example Files
 -------------

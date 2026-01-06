@@ -17,8 +17,12 @@ import org.opennars.storage.Memory;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class VectorInference {
+
+    private static final AtomicInteger injectedCount = new AtomicInteger(0);
+    private static final AtomicInteger skippedCount = new AtomicInteger(0);
 
     private VectorInference() {
     }
@@ -93,6 +97,7 @@ public final class VectorInference {
         if (narParameters.VECTOR_BRIDGE_SKIP_SELF) {
             try {
                 if (Term.isSelf(current.getTerm()) || Term.isSelf(contextTerm)) {
+                    skippedCount.incrementAndGet();
                     if (narParameters.VECTOR_BRIDGE_LOG) {
                         System.out.println("[VectorBridge] skip reason=self term=" + current.getTerm() + " ctx=" + contextTerm);
                     }
@@ -105,6 +110,7 @@ public final class VectorInference {
         // Real-vector guard: avoid random placeholder vectors causing spammy bridges.
         if (narParameters.VECTOR_BRIDGE_REQUIRE_USER_VECTORS) {
             if (!current.hasUserVector || !contextConcept.hasUserVector) {
+                skippedCount.incrementAndGet();
                 if (narParameters.VECTOR_BRIDGE_LOG) {
                     System.out.println("[VectorBridge] skip reason=noUserVector cur=" + current.getTerm() + " ctx=" + contextTerm);
                 }
@@ -114,6 +120,7 @@ public final class VectorInference {
 
         final double sim = current.vector.similarity(contextConcept.vector);
         if (sim <= narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD) {
+            skippedCount.incrementAndGet();
             if (narParameters.VECTOR_BRIDGE_LOG) {
                 System.out.println("[VectorBridge] skip reason=belowThreshold sim=" + sim + " thr=" + narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD);
             }
@@ -123,6 +130,7 @@ public final class VectorInference {
         final String key = bridgeKey(current.getTerm(), contextTerm);
         final long now = (nar != null) ? nar.time() : System.currentTimeMillis();
         if (isRecentlyInjected(mem, key, now, narParameters.VECTOR_BRIDGE_COOLDOWN)) {
+            skippedCount.incrementAndGet();
             if (narParameters.VECTOR_BRIDGE_LOG) {
                 System.out.println("[VectorBridge] skip reason=cooldown key=" + key);
             }
@@ -138,6 +146,7 @@ public final class VectorInference {
             // Integrity fix: don't re-inject static vector associations as new evidence.
             // Similarity statements are stored as beliefs under the *concept of the statement term itself*.
             if (alreadyBelieves(mem, current, similarityTerm)) {
+                skippedCount.incrementAndGet();
                 if (narParameters.VECTOR_BRIDGE_LOG) {
                     System.out.println("[VectorBridge] skip reason=alreadyBelieves term=" + similarityTerm);
                 }
@@ -164,6 +173,11 @@ public final class VectorInference {
             final Task<Term> bridgeTask = new Task<>(bridge, budget, Task.EnumType.INPUT);
             mem.localInference(bridgeTask, narParameters, nar);
 
+            int n = injectedCount.incrementAndGet();
+            if (narParameters.VECTOR_BRIDGE_LOG || n % 100 == 0) {
+                System.out.println("[VectorBridgeSummary] injected=" + n + " skipped=" + skippedCount.get() + " (at inject)");
+            }
+            
             markInjected(mem, key, now, narParameters.VECTOR_BRIDGE_RECENT_MAX);
             if (narParameters.VECTOR_BRIDGE_LOG) {
                 System.out.println("[VectorBridge] inject sim=" + sim + " task=" + similarityTerm + " prio=" + prio + " dura=" + dura);
