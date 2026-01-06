@@ -1062,11 +1062,12 @@ def run_experiment_reps(
     shell_cycles: str | int | None,
     reps: int = 1,
     seed: int = 0,
+    force_stamp: str | None = None,
 ) -> None:
     global RNG_SEED
     _ensure_jar_or_build(jar_path)
 
-    run_stamp = time.strftime("%Y%m%d_%H%M%S")
+    run_stamp = force_stamp if force_stamp else time.strftime("%Y%m%d_%H%M%S")
 
     print("\n==============================")
     print(f"Project Broca: {domain.name} transfer")
@@ -1307,6 +1308,11 @@ if __name__ == "__main__":
         default=NARS_JAR,
         help=f"Path to OpenNARS jar (default: {NARS_JAR}).",
     )
+    parser.add_argument(
+        "--stamp",
+        default=None,
+        help="Force a specific run timestamp (for comparing separate runs).",
+    )
 
     args = parser.parse_args()
     
@@ -1330,5 +1336,6 @@ if __name__ == "__main__":
             shell_cycles=args.cycles,
             reps=args.reps,
             seed=args.seed,
+            force_stamp=args.stamp,
         )
 
