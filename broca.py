@@ -192,6 +192,591 @@ DOMAINS = {
     )
 }
 
+
+# --- micro-gSCAN (Gridworld) ---
+
+
+@dataclass(frozen=True)
+class MicroGScanCombo:
+    color: str
+    shape: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.color}_{self.shape}"
+
+
+MICRO_GSCAN_TRAIN: tuple[MicroGScanCombo, MicroGScanCombo] = (
+    MicroGScanCombo("red", "square"),
+    MicroGScanCombo("blue", "circle"),
+)
+
+MICRO_GSCAN_TEST: tuple[MicroGScanCombo, MicroGScanCombo] = (
+    MicroGScanCombo("red", "circle"),
+    MicroGScanCombo("blue", "square"),
+)
+
+
+@dataclass
+class MicroGScanObject:
+    obj_token: str
+    combo: MicroGScanCombo
+    x: int
+    y: int
+
+
+class MicroGScanGridworld:
+    def __init__(self, *, size: int = 5, seed: int = 0):
+        self.size = size
+        self.rnd = random.Random(seed)
+        self.agent_x = 0
+        self.agent_y = 0
+        self.agent_dir = 0  # 0=N,1=E,2=S,3=W
+        self.objects: list[MicroGScanObject] = []
+
+    def reset(self, *, target: MicroGScanObject, distractor: MicroGScanObject) -> None:
+        self.agent_x = self.rnd.randint(0, self.size - 1)
+        self.agent_y = self.rnd.randint(0, self.size - 1)
+        self.agent_dir = self.rnd.randint(0, 3)
+        self.objects = [target, distractor]
+
+    def _in_bounds(self, x: int, y: int) -> bool:
+        return 0 <= x < self.size and 0 <= y < self.size
+
+    def step(self, action: str) -> None:
+        a = (action or "").strip().lower()
+        if a in ("left", "turn_left"):
+            self.agent_dir = (self.agent_dir - 1) % 4
+            return
+        if a in ("right", "turn_right"):
+            self.agent_dir = (self.agent_dir + 1) % 4
+            return
+        if a in ("forward", "move_forward"):
+            dx, dy = [(0, -1), (1, 0), (0, 1), (-1, 0)][self.agent_dir]
+            nx, ny = self.agent_x + dx, self.agent_y + dy
+            if self._in_bounds(nx, ny):
+                self.agent_x, self.agent_y = nx, ny
+            return
+
+    def object_at_agent(self) -> MicroGScanObject | None:
+        for o in self.objects:
+            if o.x == self.agent_x and o.y == self.agent_y:
+                return o
+        return None
+
+    def visible_objects(self) -> list[MicroGScanObject]:
+        # Full observability for now (objects only, no symbolic color/shape facts).
+        return list(self.objects)
+
+    def cell_ahead(self) -> MicroGScanObject | None:
+        """Return object in the cell the agent is facing, or None if empty/out-of-bounds."""
+        dx, dy = [(0, -1), (1, 0), (0, 1), (-1, 0)][self.agent_dir]
+        nx, ny = self.agent_x + dx, self.agent_y + dy
+        if not self._in_bounds(nx, ny):
+            return None
+        for o in self.objects:
+            if o.x == nx and o.y == ny:
+                return o
+        return None
+
+    def dir_name(self) -> str:
+        """Return direction as a string: north, east, south, west."""
+        return ["north", "east", "south", "west"][self.agent_dir]
+
+
+def _generate_colored_shape(token: str, combo: MicroGScanCombo, seed: int, path: str) -> None:
+    try:
+        from PIL import Image, ImageDraw  # type: ignore
+    except ImportError:
+        print("[Error] Missing dependency 'Pillow'. Run: pip install -r requirements.txt")
+        sys.exit(1)
+
+    w, h = 224, 224
+    rnd = random.Random(seed)
+    img = Image.new("RGB", (w, h), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Mild style jitter (deterministic) to avoid trivial pixel template matching.
+    cx, cy = w // 2 + rnd.randint(-12, 12), h // 2 + rnd.randint(-12, 12)
+    size = rnd.randint(70, 95)
+
+    color_map: dict[str, tuple[int, int, int]] = {
+        "red": (210, 30, 30),
+        "blue": (30, 80, 210),
+    }
+    rgb = color_map.get(combo.color, (0, 0, 0))
+
+    if combo.shape == "circle":
+        draw.ellipse(
+            [cx - size // 2, cy - size // 2, cx + size // 2, cy + size // 2],
+            fill=rgb,
+            outline=None,
+        )
+    else:
+        draw.rectangle(
+            [cx - size // 2, cy - size // 2, cx + size // 2, cy + size // 2],
+            fill=rgb,
+            outline=None,
+        )
+
+    img.save(path, format="PNG")
+
+
+class MicroGScanRetina:
+    def __init__(self):
+        print("[MicroGScanRetina] Loading CLIP (ViT-B/32) image encoder...")
+        self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        os.makedirs(IMAGE_DIR, exist_ok=True)
+
+    def generate_embedding_file(self, filename: str, *, randomized_objects: bool) -> None:
+        try:
+            from PIL import Image  # type: ignore
+        except ImportError:
+            print("[Error] Missing dependency 'Pillow'. Run: pip install -r requirements.txt")
+            sys.exit(1)
+
+        glove_dim = _get_glove_dim(GLOVE_FILE)
+        if glove_dim <= 0:
+            raise RuntimeError(f"Invalid glove dim from {GLOVE_FILE}: {glove_dim}")
+
+        proj_in_dim = 512
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(RNG_SEED)
+        proj = torch.randn(glove_dim, proj_in_dim, generator=gen)
+
+        # Opaque object tokens (do NOT encode color/shape in names).
+        obj_tokens: dict[str, MicroGScanCombo] = {
+            "obj_1": MICRO_GSCAN_TRAIN[0],
+            "obj_2": MICRO_GSCAN_TRAIN[1],
+            "obj_3": MICRO_GSCAN_TEST[0],
+            "obj_4": MICRO_GSCAN_TEST[1],
+        }
+
+        vector_terms = [
+            "red",
+            "blue",
+            "circle",
+            "square",
+            "property",
+            "property_1",
+            "property_2",
+            "target",
+            "achieved",
+            "left",
+            "right",
+            "forward",
+        ]
+
+        wanted_glove = {w.lower() for w in vector_terms if w.islower()}
+        glove = _load_glove_vectors(GLOVE_FILE, wanted_glove)
+
+        with open(filename, "w", encoding="utf-8") as f:
+            # 1) Object vectors
+            if randomized_objects:
+                for tok in obj_tokens.keys():
+                    vec = _deterministic_random_unit_vector(glove_dim, f"RANDOBJ_{tok}")
+                    vec_str = " ".join([f"{x:.6f}" for x in vec])
+                    f.write(f"{tok} {vec_str}\n")
+            else:
+                for tok, combo in obj_tokens.items():
+                    path = os.path.join(IMAGE_DIR, f"micro_gscan_{tok}.png")
+                    if not os.path.exists(path):
+                        digest = hashlib.sha256(f"{RNG_SEED}:{tok}".encode("utf-8")).digest()
+                        seed = int.from_bytes(digest[:4], "big", signed=False)
+                        _generate_colored_shape(tok, combo, seed, path)
+                    image = Image.open(path).convert("RGB")
+                    inputs = self.processor(images=image, return_tensors="pt")
+                    with torch.no_grad():
+                        outputs = self.model.get_image_features(**inputs)
+                        outputs = outputs / outputs.norm(p=2, dim=-1, keepdim=True)
+                    v512 = outputs[0].to(torch.float32)
+                    v = torch.matmul(proj, v512)
+                    v = v / v.norm(p=2)
+                    vec = v.tolist()
+                    vec_str = " ".join([f"{x:.6f}" for x in vec])
+                    f.write(f"{tok} {vec_str}\n")
+
+            # 2) Word/control vectors
+            for term in vector_terms:
+                key = term.lower() if term.islower() else None
+                if key is not None and key in glove:
+                    vec = glove[key]
+                else:
+                    vec = _deterministic_random_unit_vector(glove_dim, f"TERM_{term}")
+                vec_str = " ".join([f"{x:.6f}" for x in vec])
+                f.write(f"{term} {vec_str}\n")
+
+
+def _micro_gscan_inject_instruction(nars: "NarsOrganism", combo: MicroGScanCombo) -> None:
+    # Symbolic instruction encoding (no direct action rules).
+    # Important: avoid injecting explicit test-set conjunctions like (&, red, circle).
+    # We bind abstract slots to properties, then define the target conjunctively over slots.
+    nars.input(f"<{combo.color} --> property_1>. :|:", cycles=30)
+    nars.input(f"<{combo.shape} --> property_2>. :|:", cycles=30)
+    nars.input("<(&, property_1, property_2) --> target>. :|:", cycles=30)
+    nars.input("<target --> [achieved]>! :|:", cycles=50)
+
+
+def _micro_gscan_inject_perception(
+    nars: "NarsOrganism",
+    world: MicroGScanGridworld,
+    *,
+    vectors: dict[str, list[float]],
+    bridge_on: bool,
+    similarity_threshold: float = 0.15,
+) -> None:
+    # Egocentric spatial observations (minimal structured perception).
+    # 1) What's ahead
+    obj_ahead = world.cell_ahead()
+    if obj_ahead is not None:
+        nars.input(f"<cell_ahead --> {obj_ahead.obj_token}>. :|:", cycles=10)
+    else:
+        nars.input("<cell_ahead --> empty>. :|:", cycles=10)
+
+    # 2) What's at current cell
+    obj_here = world.object_at_agent()
+    if obj_here is not None:
+        nars.input(f"<cell_here --> {obj_here.obj_token}>. :|:", cycles=10)
+    else:
+        nars.input("<cell_here --> empty>. :|:", cycles=10)
+
+    # 3) Current direction
+    dir_str = world.dir_name()
+    nars.input(f"<dir --> {dir_str}>. :|:", cycles=10)
+
+    # 4) Current position (optional, egocentric grid coords)
+    nars.input(f"<pos_x --> x{world.agent_x}>. :|:", cycles=5)
+    nars.input(f"<pos_y --> y{world.agent_y}>. :|:", cycles=5)
+
+    # 5) Visibility list (keep for compatibility, but now redundant with spatial facts)
+    visible = world.visible_objects()
+    for o in visible:
+        nars.input(f"<{o.obj_token} --> [seen]>. :|:", cycles=5)
+
+    # Python-side bridge injection (similarity beliefs only).
+    if not bridge_on:
+        return
+
+    props = ["red", "blue", "circle", "square"]
+    for o in visible:
+        ov = vectors.get(o.obj_token)
+        if not ov:
+            continue
+        for p in props:
+            pv = vectors.get(p)
+            if not pv:
+                continue
+            sim = _cosine(ov, pv)
+            if sim <= similarity_threshold:
+                continue
+            prio = max(0.01, min(0.99, float(sim)))
+            dura = max(0.01, min(0.99, float(sim)))
+            # Budget prefix: $priority;durability$
+            # Truth: %frequency;confidence% where frequency~=sim
+            nars.input(f"${prio:.3f};{dura:.3f}$ <{o.obj_token} <-> {p}>. %{sim:.3f};0.900% :|:", cycles=5)
+
+
+def _micro_gscan_choose_action(harness: "ExperimentHarness", *, since_t: float) -> str | None:
+    # Use the latest utterance after since_t as the next action (left/right/forward).
+    recent = [u for u in harness.utterances if u.get("t", 0) >= since_t]
+    if not recent:
+        return None
+    a = (recent[-1].get("content") or "").strip().lower()
+    if a in ("left", "right", "forward", "turn_left", "turn_right", "move_forward"):
+        return a
+    return None
+
+
+def run_micro_gscan_reps(
+    *,
+    run_condition: str,
+    jar_path: str,
+    config: str | None,
+    nal: str | None,
+    shell_cycles: str | int | None,
+    reps: int,
+    seed: int,
+    force_stamp: str | None,
+    max_steps: int = 50,
+    train_episodes: int = 40,
+    test_episodes: int = 40,
+) -> None:
+    global RNG_SEED
+    _ensure_jar_or_build(jar_path)
+
+    run_stamp = force_stamp if force_stamp else time.strftime("%Y%m%d_%H%M%S")
+
+    summaries: list[dict] = []
+    all_trials: list[dict] = []
+
+    for rep in range(reps):
+        current_seed = seed + rep
+        RNG_SEED = current_seed
+
+        randomized_objects = (run_condition == "randomized_embeddings") or (run_condition == "ablate_bridge")
+        bridge_on = (run_condition == "bridge_on")
+        if run_condition == "bridge_off":
+            bridge_on = False
+
+        embedding_file = "micro_gscan_embeddings.txt"
+        if randomized_objects:
+            embedding_file = "micro_gscan_embeddings_randomized.txt"
+
+        # Always keep internal VectorBridge off for this benchmark; we implement the bridge explicitly in Python.
+        eff_config = config if config is not None else "config/bridge_off.xml"
+
+        if os.path.exists(embedding_file):
+            os.remove(embedding_file)
+
+        MicroGScanRetina().generate_embedding_file(embedding_file, randomized_objects=randomized_objects)
+
+        # Load vectors for cosine computations (python-side bridge).
+        wanted = {"obj_1", "obj_2", "obj_3", "obj_4", "red", "blue", "circle", "square"}
+        vectors = _load_embedding_vectors(embedding_file, wanted)
+
+        nars = NarsOrganism(
+            jar_path,
+            embedding_file,
+            config=eff_config,
+            nal=nal,
+            cycles=shell_cycles,
+        )
+        if not nars.start():
+            raise RuntimeError("Could not start NARS")
+
+        env = Environment(nars)
+        nars.attach_env(env)
+
+        log_path = os.path.join("runs", f"{run_stamp}_micro_gscan_{run_condition}_rep{rep}.jsonl")
+        harness = ExperimentHarness(env, log_path=log_path)
+        nars.on_say = harness.on_say
+        nars.on_input = harness.on_input
+
+        world = MicroGScanGridworld(size=5, seed=current_seed)
+
+        try:
+            time.sleep(2.0)
+
+            # TRAIN: only train combinations.
+            harness.set_mode("TRAIN")
+            for ep in range(train_episodes):
+                combo = MICRO_GSCAN_TRAIN[ep % len(MICRO_GSCAN_TRAIN)]
+                distract = MICRO_GSCAN_TRAIN[(ep + 1) % len(MICRO_GSCAN_TRAIN)]
+
+                # Place objects randomly.
+                tx, ty = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+                dx, dy = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+                while dx == tx and dy == ty:
+                    dx, dy = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+
+                target_obj = MicroGScanObject("obj_1" if combo == MICRO_GSCAN_TRAIN[0] else "obj_2", combo, tx, ty)
+                distract_obj = MicroGScanObject(
+                    "obj_2" if target_obj.obj_token == "obj_1" else "obj_1",
+                    distract,
+                    dx,
+                    dy,
+                )
+                world.reset(target=target_obj, distractor=distract_obj)
+
+                harness.set_stimulus(f"TRAIN_{combo.key}")
+                _micro_gscan_inject_instruction(nars, combo)
+
+                # Training signal: confirm only if agent reaches the correct target AND NARS acted.
+                episode_had_nars_action = False
+                for _ in range(max_steps):
+                    _micro_gscan_inject_perception(
+                        nars,
+                        world,
+                        vectors=vectors,
+                        bridge_on=bridge_on,
+                    )
+                    t0 = time.time()
+                    nars.input("<need_move --> [felt]>! :|:", cycles=25)
+                    time.sleep(0.05)
+                    act = _micro_gscan_choose_action(harness, since_t=t0)
+                    if act is None:
+                        # No action from NARS: treat as no-op step, do not move.
+                        continue
+                    episode_had_nars_action = True
+                    world.step(act)
+
+                    landed = world.object_at_agent()
+                    if landed is not None:
+                        if landed.obj_token == target_obj.obj_token and episode_had_nars_action:
+                            env.emit_confirm(cycles=30)
+                        break
+
+            # TEST: only test combinations. No confirm. Metrics are test-only.
+            harness.set_mode("TEST")
+            for ep in range(test_episodes):
+                combo = MICRO_GSCAN_TEST[ep % len(MICRO_GSCAN_TEST)]
+                distract = MICRO_GSCAN_TEST[(ep + 1) % len(MICRO_GSCAN_TEST)]
+
+                tx, ty = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+                dx, dy = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+                while dx == tx and dy == ty:
+                    dx, dy = world.rnd.randint(0, 4), world.rnd.randint(0, 4)
+
+                target_obj = MicroGScanObject("obj_3" if combo == MICRO_GSCAN_TEST[0] else "obj_4", combo, tx, ty)
+                distract_obj = MicroGScanObject(
+                    "obj_4" if target_obj.obj_token == "obj_3" else "obj_3",
+                    distract,
+                    dx,
+                    dy,
+                )
+                world.reset(target=target_obj, distractor=distract_obj)
+
+                harness.set_stimulus(f"TEST_{combo.key}")
+                _micro_gscan_inject_instruction(nars, combo)
+
+                outcome = "timeout"
+                reached: str | None = None
+                steps_to_success: int | None = None
+                episode_had_nars_action = False
+                no_action_steps = 0
+
+                for step in range(1, max_steps + 1):
+                    _micro_gscan_inject_perception(
+                        nars,
+                        world,
+                        vectors=vectors,
+                        bridge_on=bridge_on,
+                    )
+                    t0 = time.time()
+                    nars.input("<need_move --> [felt]>! :|:", cycles=25)
+                    time.sleep(0.05)
+                    act = _micro_gscan_choose_action(harness, since_t=t0)
+                    if act is None:
+                        # No action from NARS: count as no-op step (no movement).
+                        no_action_steps += 1
+                        continue
+                    episode_had_nars_action = True
+                    world.step(act)
+
+                    landed = world.object_at_agent()
+                    if landed is not None:
+                        reached = landed.obj_token
+                        if landed.obj_token == target_obj.obj_token:
+                            # Success only if NARS actually acted in this episode.
+                            if episode_had_nars_action:
+                                outcome = "success"
+                                steps_to_success = step
+                            else:
+                                outcome = "no_action"
+                        else:
+                            outcome = "wrong_object"
+                        break
+
+                # If episode ended with no NARS action ever, mark as no_action failure.
+                if outcome == "timeout" and not episode_had_nars_action:
+                    outcome = "no_action"
+
+                trial = {
+                    "rep": rep,
+                    "seed": current_seed,
+                    "condition": run_condition,
+                    "episode": ep,
+                    "target_combo": combo.key,
+                    "target_token": target_obj.obj_token,
+                    "distractor_token": distract_obj.obj_token,
+                    "outcome": outcome,
+                    "steps_to_success": steps_to_success,
+                    "reached_token": reached,
+                    "max_steps": max_steps,
+                    "episode_had_nars_action": episode_had_nars_action,
+                    "no_action_steps": no_action_steps,
+                }
+                all_trials.append(trial)
+
+            # Summary for this rep
+            rep_trials = [t for t in all_trials if t["rep"] == rep]
+            successes = [t for t in rep_trials if t["outcome"] == "success"]
+            wrong = [t for t in rep_trials if t["outcome"] == "wrong_object"]
+            timeouts = [t for t in rep_trials if t["outcome"] == "timeout"]
+            no_actions = [t for t in rep_trials if t["outcome"] == "no_action"]
+            times = [t["steps_to_success"] for t in successes if t.get("steps_to_success") is not None]
+            episodes_with_action = [t for t in rep_trials if t.get("episode_had_nars_action", False)]
+
+            # Determine bridge mechanism
+            bridge_mechanism = "off"
+            if run_condition == "bridge_on":
+                bridge_mechanism = "python"
+            elif run_condition == "randomized_embeddings":
+                bridge_mechanism = "python"  # same mechanism, randomized vectors
+            elif run_condition == "ablate_bridge":
+                bridge_mechanism = "off"
+
+            rep_summary = {
+                "name": "micro_gscan",
+                "domain": "micro_gscan",
+                "run_condition": run_condition,
+                "bridge_mechanism": bridge_mechanism,
+                "rep": rep,
+                "seed": current_seed,
+                "test_success_rate": (len(successes) / max(1, len(rep_trials))),
+                "test_time_to_success_mean": (sum(times) / len(times)) if times else None,
+                "test_failures": {
+                    "wrong_object": len(wrong),
+                    "timeout": len(timeouts),
+                    "no_action": len(no_actions),
+                },
+                "episodes_with_any_nars_action_rate": (len(episodes_with_action) / max(1, len(rep_trials))),
+                "trials_log": log_path,
+            }
+            summaries.append(rep_summary)
+            _write_summary(f"micro_gscan_{run_condition}_rep{rep}", rep_summary, run_stamp=run_stamp)
+        finally:
+            try:
+                harness.close()
+            except Exception:
+                pass
+            nars.kill()
+
+    # Write test trials JSONL (all reps)
+    trials_path = os.path.join("runs", f"{run_stamp}_micro_gscan_{run_condition}.trials.jsonl")
+    with open(trials_path, "w", encoding="utf-8") as f:
+        for t in all_trials:
+            f.write(json.dumps(t, ensure_ascii=False) + "\n")
+    print(f"[micro-gSCAN] Trials log saved: {trials_path}")
+
+    # Aggregate summary (test-only)
+    successes = [t for t in all_trials if t["outcome"] == "success"]
+    wrong = [t for t in all_trials if t["outcome"] == "wrong_object"]
+    timeouts = [t for t in all_trials if t["outcome"] == "timeout"]
+    no_actions = [t for t in all_trials if t["outcome"] == "no_action"]
+    times = [t["steps_to_success"] for t in successes if t.get("steps_to_success") is not None]
+    episodes_with_action = [t for t in all_trials if t.get("episode_had_nars_action", False)]
+
+    # Determine bridge mechanism
+    bridge_mechanism = "off"
+    if run_condition == "bridge_on":
+        bridge_mechanism = "python"
+    elif run_condition == "randomized_embeddings":
+        bridge_mechanism = "python"  # same mechanism, randomized vectors
+    elif run_condition == "ablate_bridge":
+        bridge_mechanism = "off"
+
+    agg = {
+        "name": "micro_gscan",
+        "domain": "micro_gscan",
+        "run_condition": run_condition,
+        "bridge_mechanism": bridge_mechanism,
+        "reps": reps,
+        "seed": seed,
+        "test_success_rate": (len(successes) / max(1, len(all_trials))),
+        "test_time_to_success_mean": (sum(times) / len(times)) if times else None,
+        "test_failures": {
+            "wrong_object": len(wrong),
+            "timeout": len(timeouts),
+            "no_action": len(no_actions),
+        },
+        "episodes_with_any_nars_action_rate": (len(episodes_with_action) / max(1, len(all_trials))),
+        "trials_path": trials_path,
+    }
+    summary_path = _write_summary(f"micro_gscan_{run_condition}", agg, run_stamp=run_stamp)
+    print(f"[micro-gSCAN] Aggregate summary saved: {summary_path}")
+
 # Map abstract sensations to deterministic local procedural images.
 # These token names are what NARS sees (opaque signals), not the labels.
 # Order matters: we want train vectors available before ablating test vectors.
@@ -1502,7 +2087,7 @@ def run_experiment_reps(
     # We prefer same run_stamp if users run them nearby, but prompt implies sequential runs.
     # We'll look for any available summary for the target conditions.
     
-    targets = ["bridge_on", "bridge_off", "ablate_bridge", "NN"]
+    targets = ["bridge_on", "bridge_off", "ablate_bridge", "randomized_embeddings", "NN"]
     # If we are bridge_on, compare to others. If we are others, compare to bridge_on.
     # To avoid duplicates, let's just always compare against everything else we can find.
     
@@ -1648,14 +2233,14 @@ if __name__ == "__main__":
     # We will enforce --condition.
     parser.add_argument(
         "--condition",
-        choices=["bridge_on", "bridge_off", "ablate_bridge", "NN"],
+        choices=["bridge_on", "bridge_off", "ablate_bridge", "randomized_embeddings", "NN"],
         required=True,
-        help="Experimental condition: bridge_on (baseline), bridge_off (control), ablate_bridge (control), or NN (baseline).",
+        help="Experimental condition: bridge_on (baseline), bridge_off (control), randomized_embeddings (control), ablate_bridge (legacy alias), or NN (baseline).",
     )
     parser.add_argument(
         "--domain",
         default="all",
-        help="Domain to run: water_wind, shape, or all (default: all).",
+        help="Domain to run: water_wind, shape, micro_gscan, or all (default: all).",
     )
     parser.add_argument(
         "--reps",
@@ -1701,6 +2286,19 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if args.domain == "micro_gscan":
+        run_micro_gscan_reps(
+            run_condition=args.condition,
+            jar_path=args.jar,
+            config=args.config,
+            nal=args.nal,
+            shell_cycles=args.cycles,
+            reps=args.reps,
+            seed=args.seed,
+            force_stamp=args.stamp,
+        )
+        sys.exit(0)
     
     selected_domains = []
     if args.domain == "all":
