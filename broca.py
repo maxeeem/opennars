@@ -478,13 +478,22 @@ def _micro_gscan_inject_perception(
 
 
 def _micro_gscan_choose_action(harness: "ExperimentHarness", *, since_t: float) -> str | None:
-    # Use the latest utterance after since_t as the next action (left/right/forward).
+    # Use the latest utterance after since_t as the next action.
+    # Accepts both legacy word actions (left/right/forward) and motor primitives (turn_left/turn_right/forward).
     recent = [u for u in harness.utterances if u.get("t", 0) >= since_t]
     if not recent:
         return None
     a = (recent[-1].get("content") or "").strip().lower()
-    if a in ("left", "right", "forward", "turn_left", "turn_right", "move_forward"):
-        return a
+    # Map motor primitives to gridworld actions
+    if a in ("forward",):
+        return "forward"
+    if a in ("turn_left", "left"):
+        return "turn_left"
+    if a in ("turn_right", "right"):
+        return "turn_right"
+    # Legacy compatibility
+    if a in ("move_forward",):
+        return "forward"
     return None
 
 
@@ -1179,8 +1188,22 @@ class NarsOrganism:
         if self.env:
             self.env.sound_event(content)
 
+    def _emit_motor(self, action: str) -> None:
+        """Emit a motor action event."""
+        action = action.strip().lower()
+        if not action:
+            return
+
+        if self.on_say is not None:
+            try:
+                # Reuse on_say callback to deliver motor actions
+                self.on_say(action)
+            except Exception:
+                pass
+
     def _listen_stdout(self):
         say_self_re = re.compile(r"\bOUT:\s*\(\^say\s*,\s*\{SELF\}\s*,\s*([^\)]+)\)")
+        motor_re = re.compile(r"\[MOTOR\]\s+(forward|turn_left|turn_right)")
         while self.listening and self.process and self.process.poll() is None:
             try:
                 line = self.process.stdout.readline()
@@ -1198,6 +1221,13 @@ class NarsOrganism:
                         if "=" in p:
                             k, v = p.split("=", 1)
                             self.bridge_config[k] = v
+
+                # Check for motor actions first
+                motor_match = motor_re.search(clean_line)
+                if motor_match:
+                    motor_action = motor_match.group(1)
+                    self._emit_motor(motor_action)
+                    continue
 
                 if "[OUTPUT]" in clean_line:
                     content = clean_line.split("[OUTPUT]")[1].strip()

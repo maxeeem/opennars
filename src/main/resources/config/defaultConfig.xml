@@ -210,6 +210,11 @@
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^run"/>
         </plugin>
+
+        <!-- Minimal motor primitives for micro-gSCAN -->
+        <plugin classpath="org.opennars.operator.motor.Forward"/>
+        <plugin classpath="org.opennars.operator.motor.TurnLeft"/>
+        <plugin classpath="org.opennars.operator.motor.TurnRight"/>
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^feel"/>
         </plugin>
