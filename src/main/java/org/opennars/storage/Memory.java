@@ -27,6 +27,7 @@ import org.opennars.control.concept.ProcessTask;
 import org.opennars.control.DerivationContext;
 import org.opennars.control.GeneralInferenceControl;
 import org.opennars.control.TemporalInferenceControl;
+import org.opennars.control.VectorInference;
 import org.opennars.entity.*;
 import org.opennars.inference.BudgetFunctions;
 import org.opennars.interfaces.Resettable;
@@ -42,12 +43,14 @@ import org.opennars.io.events.OutputHandler.OUT;
 import org.opennars.io.events.OutputHandler.DEBUG;
 import org.opennars.language.CompoundTerm;
 import org.opennars.language.Interval;
+import org.opennars.language.Statement;
 import org.opennars.language.Tense;
 import org.opennars.language.Term;
 import org.opennars.main.Nar;
 import org.opennars.main.Parameters;
 import org.opennars.operator.Operation;
 import org.opennars.operator.Operator;
+import org.opennars.operator.mental.Say;
 import org.opennars.plugin.mental.Emotions;
 import org.opennars.main.Debug;
 
@@ -88,6 +91,17 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
     
     //todo make sense of this class and de-obfuscate
     public final Bag<Concept,Term> concepts;
+
+    // VectorNARS: last concept focus context (null means no focus)
+    public transient Hypervector lastContextVector = null;
+    public transient Term lastContextTerm = null;
+
+    // VectorNARS: recently injected bridge statements (cooldown guard)
+    // Keyed by an order-independent pair of term strings.
+    public transient LinkedHashMap<String, Long> vectorBridgeLastInjected = new LinkedHashMap<>();
+
+    /** Optional: lazy embedding lookup by atomic term string (e.g., from GloVe). */
+    public transient Map<String, Hypervector> gloveVectors = null;
     public transient EventEmitter event;
     
     /* InnateOperator registry. Containing all registered operators of the system */
@@ -123,6 +137,7 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
         this.recent_operations = recent_operations;
         this.seq_current = seq_current;
         this.operators = new LinkedHashMap<>();
+        addOperator(new Say());
         reset();
     }
     
@@ -206,6 +221,15 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             }
 
             displaced = concepts.putBack(concept, cycles(narParameters.CONCEPT_FORGET_DURATIONS), this);
+        }
+
+        // Lazy vector override (if embeddings were loaded).
+        if (concept != null && gloveVectors != null) {
+            final Hypervector hv = gloveVectors.get(term.toString());
+            if (hv != null) {
+                concept.vector = hv;
+                concept.hasUserVector = true;
+            }
         }
 
         if (displaced == null) {
@@ -372,6 +396,28 @@ public class Memory implements Serializable, Iterable<Concept>, Resettable {
             cont.setCurrentTask(task);
             cont.setCurrentTerm(task.getTerm());
             cont.setCurrentConcept(conceptualize(task.budget, cont.getCurrentTerm()));
+
+            // VectorNARS: ground "context" in the current task term.
+            // Important: do NOT call conceptualize() here, because it activates/creates concepts
+            // and perturbs bag ordering (breaking determinism in multi-step regression tests).
+                if (VectorInference.isEnabled() && cont.getCurrentConcept() != null && !task.sentence.isGoal()) {
+                Term focusTerm = cont.getCurrentTerm();
+                if (focusTerm instanceof Statement) {
+                    focusTerm = ((Statement) focusTerm).getSubject();
+                }
+                if (focusTerm != null && !(focusTerm instanceof Interval)) {
+                    focusTerm = CompoundTerm.replaceIntervals(focusTerm);
+                    final Concept focusConcept = concept(focusTerm); // existing only; no side effects
+                    // Real-context guard: only update context when the focus term has a real embedding.
+                    // If embeddings aren't loaded (or this term isn't in the embedding map), do nothing
+                    // so random placeholder vectors can't steer attention.
+                    if (focusConcept != null && focusConcept.hasUserVector && focusConcept.vector != null) {
+                        this.lastContextVector = focusConcept.vector;
+                        this.lastContextTerm = focusTerm;
+                    }
+                }
+            }
+
             if (cont.getCurrentConcept() != null) {
                 final boolean processed = ProcessTask.processTask(cont.getCurrentConcept(), cont, task, time);
                 if (processed) {

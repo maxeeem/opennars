@@ -218,6 +218,35 @@ public class Parameters implements Serializable {
     /** how much risk is the system allowed to take just to fullfill its hunger for knowledge? */
     public volatile float CURIOSITY_DESIRE_CONFIDENCE_MUL=0.1f;
 
+    // VectorNARS / VectorBridge --------------------------------------------------
+    // These settings are read from config XML (ConfigReader reflects on Parameters).
+    // The system property -Dopennars.vector=true remains the master feature gate;
+    // these knobs tune behavior when vector mode is enabled.
+
+    /** Enables/disables bridge injection when vector mode is enabled. */
+    public volatile boolean VECTOR_BRIDGE_ENABLED = true;
+
+    /** Similarity threshold for injecting <A <-> B>. (Higher = more conservative.) */
+    public volatile double VECTOR_BRIDGE_SIMILARITY_THRESHOLD = 0.8;
+
+    /** When any desire/quest exists anywhere, scale down bridge task budgets by this factor. */
+    public volatile float VECTOR_BRIDGE_THROTTLE_FACTOR_WHEN_GOAL_OR_QUEST = 0.2f;
+
+    /** Cooldown in Nar.time() ticks (cycles if STEPS_CLOCK, otherwise ms) for repeating the same bridge pair. */
+    public volatile int VECTOR_BRIDGE_COOLDOWN = 5;
+
+    /** Max number of recent bridge pairs tracked for cooldown. */
+    public volatile int VECTOR_BRIDGE_RECENT_MAX = 2048;
+
+    /** If true, only concepts with hasUserVector=true participate in bridging (avoids random placeholders). */
+    public volatile boolean VECTOR_BRIDGE_REQUIRE_USER_VECTORS = true;
+
+    /** If true, do not inject bridges involving Term.SELF. */
+    public volatile boolean VECTOR_BRIDGE_SKIP_SELF = true;
+
+    /** If true, print bridge decisions (skip/throttle/inject) to stdout. */
+    public volatile boolean VECTOR_BRIDGE_LOG = false;
+
     /** how much priority should curiosity have? */
     public volatile float CURIOSITY_DESIRE_PRIORITY_MUL=0.1f;
 

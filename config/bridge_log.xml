@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+  <!-- Minimal config override: rely on Parameters defaults for everything else -->
+  <conf name="VECTOR_BRIDGE_ENABLED" value="true"/>
+  <conf name="VECTOR_BRIDGE_LOG" value="true"/>
+  <conf name="VECTOR_BRIDGE_REQUIRE_USER_VECTORS" value="true"/>
+  <conf name="VECTOR_BRIDGE_SIMILARITY_THRESHOLD" value="0.8"/>
+  <conf name="VECTOR_BRIDGE_THROTTLE_FACTOR_WHEN_GOAL_OR_QUEST" value="0.2"/>
+  <conf name="VECTOR_BRIDGE_COOLDOWN" value="5"/>
+  <conf name="VECTOR_BRIDGE_RECENT_MAX" value="2048"/>
+  <conf name="VECTOR_BRIDGE_SKIP_SELF" value="true"/>
+</config>

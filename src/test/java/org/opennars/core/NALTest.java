@@ -73,6 +73,52 @@ public class NALTest  {
     // exposed to be able to change it from the outside
     public static String[] directories = new String[] {"/nal/single_step/", "/nal/multi_step/", "/nal/application/"};
 
+    private static boolean getBooleanProperty(final String key, final boolean defaultValue) {
+        final String v = System.getProperty(key);
+        if (v == null) {
+            return defaultValue;
+        }
+        final String s = v.trim();
+        if (s.isEmpty()) {
+            return defaultValue;
+        }
+        return Boolean.parseBoolean(s);
+    }
+
+    private static String getStringProperty(final String key) {
+        final String v = System.getProperty(key);
+        if (v == null) {
+            return null;
+        }
+        final String s = v.trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private static boolean pathMatchesFilter(final String path, final String filter) {
+        if (filter == null || filter.isEmpty()) {
+            return true;
+        }
+        final String f = filter.endsWith(".nal") ? filter : (filter + ".nal");
+        return path.contains(filter) || path.contains(f);
+    }
+
+    private static String[] getDirectories() {
+        final String configured = System.getProperty("nal.directories");
+        if (configured == null || configured.trim().isEmpty()) {
+            return directories;
+        }
+
+        final String[] parts = configured.split(",");
+        final List<String> cleaned = new ArrayList<>();
+        for (final String part : parts) {
+            final String p = part.trim();
+            if (!p.isEmpty()) {
+                cleaned.add(p);
+            }
+        }
+        return cleaned.toArray(new String[0]);
+    }
+
     public static double scoreSum = 0.0; // sum of all scores
     public static double scoreSumWithTime = 0.0; // sum of all scores
 
@@ -107,10 +153,25 @@ public class NALTest  {
     public static Collection params() {
         // return all test-paths of all files in the directories
 
-        final Map<String, Object> et = ExampleFileInput.getUnitTests(directories);
-        final Collection t = et.values();
-        for (final String x : et.keySet()) addTest(x);
-        return t;
+        final Map<String, Object> et = ExampleFileInput.getUnitTests(getDirectories());
+        final String nalFileFilter = getStringProperty("nal.file");
+
+        if (nalFileFilter == null) {
+            final Collection t = et.values();
+            for (final String x : et.keySet()) {
+                addTest(x);
+            }
+            return t;
+        }
+
+        final List<Object> filtered = new ArrayList<>();
+        for (final Map.Entry<String, Object> e : et.entrySet()) {
+            if (pathMatchesFilter(e.getKey(), nalFileFilter)) {
+                addTest(e.getKey());
+                filtered.add(e.getValue());
+            }
+        }
+        return filtered;
     }
     
     
@@ -309,7 +370,9 @@ public class NALTest  {
     }
 
     static {
-        Debug.DETAILED = false;
+        Debug.DETAILED = getBooleanProperty("nal.debugDetailed", false);
         Debug.TEST = true;
+        showOutput = getBooleanProperty("nal.showOutput", false);
+        showSuccess = getBooleanProperty("nal.showSuccess", showOutput);
     }
 }

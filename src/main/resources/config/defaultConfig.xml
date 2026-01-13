@@ -78,6 +78,16 @@
     <conf name="CURIOSITY_DESIRE_CONFIDENCE_MUL" value="0.1"/>
     <conf name="CURIOSITY_DESIRE_PRIORITY_MUL" value="0.1"/>
     <conf name="CURIOSITY_DESIRE_DURABILITY_MUL" value="0.3"/>
+
+    <!-- VectorNARS / VectorBridge -->
+    <conf name="VECTOR_BRIDGE_ENABLED" value="true"/>
+    <conf name="VECTOR_BRIDGE_SIMILARITY_THRESHOLD" value="0.8"/>
+    <conf name="VECTOR_BRIDGE_THROTTLE_FACTOR_WHEN_GOAL_OR_QUEST" value="0.2"/>
+    <conf name="VECTOR_BRIDGE_COOLDOWN" value="5"/>
+    <conf name="VECTOR_BRIDGE_RECENT_MAX" value="2048"/>
+    <conf name="VECTOR_BRIDGE_REQUIRE_USER_VECTORS" value="true"/>
+    <conf name="VECTOR_BRIDGE_SKIP_SELF" value="true"/>
+    <conf name="VECTOR_BRIDGE_LOG" value="false"/>
     <conf name="CURIOSITY_FOR_OPERATOR_ONLY" value="false"/>
     
     <conf name="BREAK_NAL_HOL_BOUNDARY" value="false"/>
@@ -190,9 +200,7 @@
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^escape"/>
         </plugin>
-        <plugin classpath="org.opennars.operator.NullOperator">
-            <arg type="String.class" value="^say"/>
-        </plugin>
+        <plugin classpath="org.opennars.operator.mental.Say"/>
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^right"/>
         </plugin>
@@ -202,6 +210,11 @@
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^run"/>
         </plugin>
+
+        <!-- Minimal motor primitives for micro-gSCAN -->
+        <plugin classpath="org.opennars.operator.motor.Forward"/>
+        <plugin classpath="org.opennars.operator.motor.TurnLeft"/>
+        <plugin classpath="org.opennars.operator.motor.TurnRight"/>
         <plugin classpath="org.opennars.operator.NullOperator">
             <arg type="String.class" value="^feel"/>
         </plugin>

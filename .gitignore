@@ -60,3 +60,30 @@ hs_err_pid*
 
 #project specific
 /src/genjava
+
+# local editor settings
+.vscode/
+
+# maven-shade-plugin output
+dependency-reduced-pom.xml
+
+# Local VectorNARS test assets (too large for git)
+/vector-test/glove.txt
+/vector-test/glove.txt.bin
+
+# Alternate local embeddings location
+/glove-embeddings/
+
+# Retina edition runtime artifacts
+__pycache__/
+*.pyc
+/retina_cache/
+/clip_embeddings.txt
+/clip_embeddings.txt.bin
+
+# Broca runner artifacts (generated)
+/runs/
+/water_embeddings*.txt
+/water_embeddings*.txt.bin
+/*_ablate.txt
+/*_ablate.txt.bin

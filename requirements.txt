@@ -1,0 +1,7 @@
+torch
+transformers
+pillow
+requests
+matplotlib
+pandas
+markdown

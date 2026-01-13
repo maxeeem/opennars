@@ -148,6 +148,61 @@ Run Requirements
 ----------------
  * Java 8+ (OpenJDK 10 recommended)
 
+Project Broca (Audit-Safe Evaluation)
+------------------------------------
+
+This is an ICLR-ready mechanistically interpretable experiment package.
+
+### Quickstart
+
+1.  **Install dependencies** (`.venv` recommended):
+    ```bash
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
+
+2.  **Build OpenNARS**:
+    ```bash
+    mvn -Dmaven.javadoc.skip=true package -DskipTests
+    ```
+
+3.  **Run Experiment (Baseline vs Ablation)**:
+    ```bash
+    bash scripts/run_all.sh
+    # OR manually:
+    python broca.py --domain all --run baseline --reps 50 --seed 1
+    python broca.py --domain all --run ablate_bridge --reps 50 --seed 1
+    ```
+
+4.  **Generate Report & Figures**:
+    ```bash
+    python scripts/make_figures.py
+    python scripts/export_paper_pdf.py
+    # Output: paper/paper.html (Print to PDF)
+    ```
+
+### Reproduce Results
+
+To verify the "Bridge Hypothesis" (that vector similarity enables zero-shot transfer):
+
+*   **Baseline**: NARS with enabled vector-similarity bridge.
+*   **Ablated**: Bridge mechanics removed (vectors randomized in critical pairs).
+
+Results are stored in `runs/`. To see a quick summary table:
+```bash
+python scripts/summarize_runs.py
+```
+
+### Audit Guarantees
+
+The harness enforces strict "clean-room" evaluation standards for ICLR:
+
+1.  **No Test-Time Label Leakage**: The target labels (e.g. "water", "circle") are **never** injected into the NARS input stream during the `TEST` phase.
+2.  **No Oracle Reward**: No `<confirm --> [felt]>` or other teacher signal is provided during `TEST`.
+3.  **Non-Semantic Hearing**: The system hears `utterance_<hash>` instead of semantic words to prevent phonological shortcuts.
+4.  **Deterministic Assets**: Visual stimuli are generated procedurally with fixed seeds to ensure pixel-perfect reproducibility.
+5.  **Verified Diagnostics**: Every run logs the cosine similarity matrix of the projected embeddings to prove that ablation successfully Orthogonalized the vector space.
+
 Example Files
 -------------
 For an overview of reasoning features, see working examples (tests) in the nal folder, also explained in [SingleStepTestingCases](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/single_step) and [MultiStepExamples](https://github.com/opennars/opennars/tree/master/src/main/resources/nal/multi_step).

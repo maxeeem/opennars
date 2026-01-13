@@ -24,12 +24,16 @@
 package org.opennars.main;
 
 import org.opennars.io.events.TextOutputHandler;
+import org.opennars.storage.GloVeLoader;
 import org.xml.sax.SAXException;
 
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.opennars.language.Term;
 
 /**
@@ -38,6 +42,8 @@ import org.opennars.language.Term;
 /* TODO check duplicated code with {@link org.opennars.main.Nar} */
 // Manage the internal working thread. Communicate with Reasoner only.
 public class Shell {
+
+    private static final String DEFAULT_GLOVE_PATH = "glove-embeddings/glove.txt";
 
     private final Nar nar;
     private PrintStream out = System.out;
@@ -97,6 +103,31 @@ public class Shell {
      */
     public static void main(String[] args) throws IOException, InstantiationException, InvocationTargetException, NoSuchMethodException, 
             ParserConfigurationException, IllegalAccessException, SAXException, ClassNotFoundException, ParseException, InterruptedException {
+        String glovePath = null;
+        boolean explicitGlovePath = false;
+        if (args != null && args.length > 0) {
+            final List<String> argList = new ArrayList<>(Arrays.asList(args));
+            for (int i = 0; i < argList.size(); i++) {
+                if ("--glove".equals(argList.get(i))) {
+                    if (i + 1 >= argList.size()) {
+                        System.err.println("Missing value for --glove");
+                        System.exit(1);
+                    }
+                    glovePath = argList.get(i + 1);
+                    explicitGlovePath = true;
+                    argList.remove(i + 1);
+                    argList.remove(i);
+                    break;
+                }
+            }
+            args = argList.toArray(new String[0]);
+        }
+
+        // If vector mode is explicitly enabled and no override was provided, try a default glove path.
+        if (glovePath == null && Boolean.getBoolean("opennars.vector")) {
+            glovePath = DEFAULT_GLOVE_PATH;
+        }
+
         if(args.length == 0) { //in that case just run the instance
             args = new String[] { "null", "null", "null", "null"};
         }
@@ -107,6 +138,61 @@ public class Shell {
         
         log("creating Nar...");
         Nar nar = Shell.createNar(args);
+
+        // Verification banner for broca.py
+        if (Boolean.getBoolean("opennars.vector")) {
+            System.out.println("[VectorBridgeConfig] VECTOR_BRIDGE_ENABLED=" + nar.narParameters.VECTOR_BRIDGE_ENABLED + 
+                               " VECTOR_BRIDGE_SIMILARITY_THRESHOLD=" + nar.narParameters.VECTOR_BRIDGE_SIMILARITY_THRESHOLD);
+        }
+
+        if (glovePath != null) {
+            System.out.println("========================================");
+            System.out.println("   VECTOR-NARS: Loading Embeddings...");
+            final File gloveFile = new File(glovePath);
+            System.out.println("   File: " + gloveFile.getAbsolutePath());
+            System.out.println("========================================");
+
+            if (!gloveFile.exists() || !gloveFile.isFile()) {
+                if (explicitGlovePath) {
+                    System.err.println("!!! FAILED TO LOAD GLOVE (file not found) !!!");
+                    System.exit(1);
+                } else {
+                    System.out.println("   Note: Default GloVe file not found; continuing without embeddings.");
+                }
+            } else {
+                try {
+                    final long start = System.currentTimeMillis();
+                    final int loaded = GloVeLoader.loadAndCount(nar, gloveFile, 50000);
+                    final long end = System.currentTimeMillis();
+
+                    if (loaded <= 0) {
+                        if (explicitGlovePath) {
+                            System.err.println("!!! FAILED TO LOAD GLOVE (0 vectors loaded) !!!");
+                            System.exit(1);
+                        } else {
+                            System.out.println("   Note: Default GloVe loaded 0 vectors; continuing without embeddings.");
+                        }
+                    } else {
+                        // Convenience: enable vector mode once embeddings exist (especially when using --glove).
+                        System.setProperty("opennars.vector", "true");
+
+                        System.out.println("   Success! Loaded " + loaded + " vectors in " + (end - start) + "ms.");
+                        System.out.println("   [X] Semantic Tracking");
+                        System.out.println("   [X] Associative Attention");
+                        System.out.println("   [X] Synonym Bridging");
+                        System.out.println("========================================");
+                    }
+                } catch (Exception e) {
+                    if (explicitGlovePath) {
+                        System.err.println("!!! FAILED TO LOAD GLOVE !!!");
+                        e.printStackTrace();
+                        System.exit(1);
+                    } else {
+                        System.out.println("   Note: Default GloVe load failed; continuing without embeddings.");
+                    }
+                }
+            }
+        }
         
         if(args.length > 4) {
             log("attaching NarNode networking features to Nar...");
@@ -139,6 +225,9 @@ public class Shell {
             while (true) {
                 try {
                     final String line = bufIn.readLine();
+                    if (line == null) {
+                        return; // EOF
+                    }
                     if (line != null) {
                         try {
                             nar.addInput(line);
@@ -186,8 +275,14 @@ public class Shell {
         if (hasNumberOfSteps) {
             nar.cycles(numberOfSteps);
             System.exit(0);
-        } else {
+        } else if (hasInputFile) {
+            // For batch input files, keep the reasoner running continuously.
             nar.start();
+        } else {
+            // Interactive mode: do NOT start the continuous cycle loop.
+            // Nar already executes a cycle per input when not running,
+            // and entering a number runs that many cycles.
+            System.out.println("[l]: interactive step mode (type a number to run N cycles)");
         }
     }
 

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<config>
+    <!-- VectorNARS / VectorBridge override -->
+    <conf name="VECTOR_BRIDGE_ENABLED" value="false"/>
+</config>
